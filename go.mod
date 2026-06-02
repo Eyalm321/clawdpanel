@@ -53,3 +53,5 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
+
+replace github.com/kkdai/youtube/v2 => github.com/Eyalm321/youtube/v2 v2.10.6-patch2
