@@ -3,7 +3,7 @@ module claudepanel
 go 1.26
 
 require (
-	github.com/kkdai/youtube/v2 v2.10.6
+	github.com/kkdai/youtube/v2 v2.10.7-0.20260602173030-08c2f7c74295
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.96
 	golang.org/x/sys v0.44.0
 )
@@ -53,5 +53,3 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
-
-replace github.com/kkdai/youtube/v2 => github.com/Eyalm321/youtube/v2 v2.10.6-patch2
