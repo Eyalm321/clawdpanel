@@ -24,6 +24,16 @@ type Event struct {
 	// frontend, so the UI can filter to the active station. The audio layer
 	// itself leaves it at 0.
 	StationIdx int `json:"stationIdx"`
+	// Position/Duration are the current track's playhead and total length in
+	// seconds, used by the bar's seek timeline. Duration is 0 for livestreams
+	// (and briefly before a VOD's NaturalDuration is known).
+	Position float64 `json:"position,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
+	// Progress marks a throttled position tick (same playback state, advanced
+	// playhead) rather than a state transition. The station player forwards
+	// these straight through without running its advance/skip logic, and the
+	// frontend uses them to move the timeline without touching the status UI.
+	Progress bool `json:"progress,omitempty"`
 }
 
 type Player interface {
@@ -34,6 +44,9 @@ type Player interface {
 	Pause() error
 	Stop() error
 	SetVolume(v float64) error // 0..1
+	// Seek jumps the current track's playhead to the given offset in seconds.
+	// No-op / best-effort for livestreams and on backends that don't support it.
+	Seek(seconds float64) error
 	Close() error
 }
 

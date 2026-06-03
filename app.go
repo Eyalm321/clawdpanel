@@ -939,6 +939,19 @@ func (a *App) RadioSetShuffle(index int, on bool) error {
 	return nil
 }
 
+// RadioSeek jumps the currently-playing track to the given offset in seconds.
+// Driven by the bar's seek timeline. No-op when radio is disabled or nothing is
+// loaded; ignored for livestreams by the underlying player.
+func (a *App) RadioSeek(seconds float64) error {
+	a.audioMu.Lock()
+	ctrl := a.audioCtrl
+	a.audioMu.Unlock()
+	if ctrl == nil {
+		return fmt.Errorf("radio is disabled")
+	}
+	return ctrl.Seek(seconds)
+}
+
 func (a *App) RadioSetVolume(v float64) error {
 	// Persist the chosen volume so it survives restarts (replaces the prior
 	// localStorage-only value), even while the engine is down — so a later

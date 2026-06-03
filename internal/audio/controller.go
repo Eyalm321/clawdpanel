@@ -4,7 +4,13 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 )
+
+// progressInterval throttles the playhead/timeline updates forwarded to the
+// frontend. The player polls every 100ms (needed for end-of-track detection),
+// but ~2.5 timeline updates/sec is plenty and keeps the event channel quiet.
+const progressInterval = 400 * time.Millisecond
 
 // ResolvedTrack mirrors radio.ResolvedTrack so the audio package stays free of
 // a dependency on the radio package (which imports kkdai/youtube).
@@ -27,6 +33,7 @@ type Controller struct {
 	currentState  State
 	curIsLive     bool
 	retried       bool
+	lastProgress  time.Time
 }
 
 func NewController(resolver StreamResolver, emit func(Event)) (*Controller, error) {
@@ -47,8 +54,27 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Suppress duplicate idle/unaltered state transitions to avoid log/event spam
+	// Suppress duplicate idle/unaltered state transitions to avoid log/event spam.
+	// A steady StatePlaying tick isn't a transition but does carry an advanced
+	// playhead — forward it (throttled) as a Progress event so the bar's seek
+	// timeline moves without re-triggering the status/marquee UI.
 	if ev.State == c.currentState && ev.Err == "" {
+		if c.currentState == StatePlaying && time.Since(c.lastProgress) >= progressInterval {
+			c.lastProgress = time.Now()
+			pos, dur := ev.Position, ev.Duration
+			if c.curIsLive {
+				// Livestreams report a sentinel "infinite" NaturalDuration; zero it
+				// so the bar shows LIVE instead of a garbage duration.
+				pos, dur = 0, 0
+			}
+			c.emit(Event{
+				State:    StatePlaying,
+				Progress: true,
+				VideoID:  c.activeVideoID,
+				Position: pos,
+				Duration: dur,
+			})
+		}
 		return
 	}
 
@@ -102,6 +128,9 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 	}
 	if ev.VideoID == "" {
 		ev.VideoID = c.activeVideoID
+	}
+	if c.curIsLive {
+		ev.Position, ev.Duration = 0, 0 // see progress branch: hide bogus live duration
 	}
 	c.emit(ev)
 }
@@ -179,6 +208,17 @@ func (c *Controller) SetVolume(v float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.player.SetVolume(v)
+}
+
+// Seek jumps the current track's playhead to seconds. No-op when nothing is
+// loaded; the underlying player ignores it for livestreams.
+func (c *Controller) Seek(seconds float64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.player == nil || c.activeVideoID == "" {
+		return nil
+	}
+	return c.player.Seek(seconds)
 }
 
 func (c *Controller) Close() error {

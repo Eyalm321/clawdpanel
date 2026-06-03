@@ -108,6 +108,12 @@ func (p *DarwinPlayer) SetVolume(v float64) error {
 	return nil
 }
 
+// Seek is not yet wired on macOS (TODO: AVPlayer seekToTime). The bar's
+// timeline degrades to read-only here.
+func (p *DarwinPlayer) Seek(seconds float64) error {
+	return nil
+}
+
 func (p *DarwinPlayer) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

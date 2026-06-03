@@ -14,6 +14,7 @@ type mockPlayer struct {
 	pauseFunc     func() error
 	stopFunc      func() error
 	setVolumeFunc func(v float64) error
+	seekFunc      func(seconds float64) error
 	closeFunc     func() error
 }
 
@@ -58,6 +59,15 @@ func (m *mockPlayer) SetVolume(v float64) error {
 	defer m.mu.Unlock()
 	if m.setVolumeFunc != nil {
 		return m.setVolumeFunc(v)
+	}
+	return nil
+}
+
+func (m *mockPlayer) Seek(seconds float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seekFunc != nil {
+		return m.seekFunc(seconds)
 	}
 	return nil
 }

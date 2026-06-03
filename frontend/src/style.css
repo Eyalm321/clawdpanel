@@ -432,7 +432,9 @@ html, body {
 }
 
 .radio-title-wrap {
-  width: 75px;
+  /* Sized to fit the seek scrubber so toggling name ⇄ timeline doesn't shift
+     the bar layout. */
+  width: 168px;
   overflow: hidden;
   white-space: nowrap;
   display: inline-flex;
@@ -454,6 +456,82 @@ html, body {
   0% { transform: translate3d(0, 0, 0); }
   100% { transform: translate3d(-50%, 0, 0); }
 }
+
+/* ── Inline seek timeline (revealed by clicking the track title) ── */
+.radio-timeline {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+#seg-radio.timeline-open #radio-title    { display: none; }
+#seg-radio.timeline-open .radio-timeline { display: flex; }
+
+.radio-time {
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  min-width: 26px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+#radio-time-cur { cursor: pointer; }          /* doubles as the collapse toggle */
+#radio-time-dur { text-align: right; }
+
+/* Beveled inset groove (the scrubber track). */
+.radio-tl-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 8px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7),
+              inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+.radio-tl-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0%;
+  border-radius: 5px 0 0 5px;
+  background: var(--clay);
+  pointer-events: none;
+}
+/* Raised pill handle that pops above the groove. */
+.radio-tl-handle {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  width: 12px;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #fdfdfd, #c9ccd1);
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+/* Two vertical grip lines (||) for a retro fader-knob look. */
+.radio-tl-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 6px;
+  border-left: 1px solid rgba(0, 0, 0, 0.4);
+  border-right: 1px solid rgba(0, 0, 0, 0.4);
+}
+.radio-tl-track:hover .radio-tl-handle { background: linear-gradient(180deg, #ffffff, #dfe2e7); }
+
+/* Livestream: inert full groove, no handle, "LIVE" read-out. */
+.radio-timeline.live .radio-tl-track  { cursor: default; }
+.radio-timeline.live .radio-tl-handle { display: none; }
+.radio-timeline.live .radio-tl-fill   { background: var(--green); opacity: 0.5; }
+.radio-timeline.live #radio-time-cur  { color: var(--green); }
 
 @keyframes soundwave {
   0%, 100% { opacity: 0.7; }

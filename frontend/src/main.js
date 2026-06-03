@@ -4,7 +4,7 @@ import {
   GetMonitors, SetMonitor, ToggleClickThrough, GetVersion,
   SaveConfig, SetPinned,
   RadioPlayStation, RadioPause, RadioSetVolume, RadioSetShuffle, SetActiveStation,
-  RadioNext, RadioPrev, RadioStationHasTracks,
+  RadioNext, RadioPrev, RadioStationHasTracks, RadioSeek,
   OpenTerminal, OpenTerminalPrompt, ToggleBrandMenu
 } from '../bindings/claudepanel/app.js';
 import { Events } from '@wailsio/runtime';
@@ -465,6 +465,7 @@ function setRadioStatus(state) {
       statusEl.classList.add('loading');
       statusEl.title = 'Loading…';
       if (titleEl) { titleEl.textContent = stationName; titleEl.classList.remove('marquee'); }
+      resetTimeline(); // new track: zero the scrubber until the first progress tick
       break;
     case 'on':
       isRadioPlaying = true;
@@ -490,6 +491,132 @@ function setRadioStatus(state) {
   updateShuffleUI();
 }
 
+// ── Seek timeline ────────────────────────────────────────────────────────────
+// Click the track title to reveal an inline scrubber. The Go engine emits
+// throttled progress events (state=playing, progress=true) carrying position +
+// duration in seconds; we paint the groove/handle from those. Dragging the
+// handle (or clicking the track) seeks via RadioSeek. dur<=0 ⇒ a livestream:
+// the groove shows an inert "LIVE" with no handle.
+let tlOpen = false;
+let tlDragging = false;
+let curPos = 0;
+let curDur = 0;
+let tlHideTimer = null;
+
+// Auto-collapse the scrubber back to the title a few seconds after the cursor
+// leaves the radio segment (cancelled while hovering or mid-drag).
+function scheduleTimelineHide() {
+  clearTimeout(tlHideTimer);
+  tlHideTimer = setTimeout(() => {
+    if (tlOpen && !tlDragging) toggleTimeline(false);
+  }, 3000);
+}
+function cancelTimelineHide() { clearTimeout(tlHideTimer); }
+
+function fmtTime(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const m = Math.floor(s / 60);
+  return m + ':' + String(s % 60).padStart(2, '0');
+}
+
+function updateTimeline(pos, dur) {
+  curPos = pos; curDur = dur;
+  const tl = document.getElementById('radio-timeline');
+  if (!tl) return;
+  const fill = document.getElementById('radio-tl-fill');
+  const handle = document.getElementById('radio-tl-handle');
+  const curEl = document.getElementById('radio-time-cur');
+  const durEl = document.getElementById('radio-time-dur');
+  const live = !(dur > 0);
+  tl.classList.toggle('live', live);
+  if (live) {
+    if (fill) fill.style.width = '100%';
+    if (curEl) curEl.textContent = 'LIVE';
+    if (durEl) durEl.textContent = '';
+    return;
+  }
+  const frac = Math.min(1, Math.max(0, pos / dur));
+  if (fill) fill.style.width = (frac * 100) + '%';
+  if (handle) handle.style.left = (frac * 100) + '%';
+  if (curEl) curEl.textContent = fmtTime(pos);
+  if (durEl) durEl.textContent = fmtTime(dur);
+}
+
+// Neutral "starting a track" paint (duration not known yet) — avoids flashing
+// LIVE for a VOD during the brief load before the first progress tick.
+function resetTimeline() {
+  curPos = 0; curDur = 0;
+  const tl = document.getElementById('radio-timeline');
+  if (tl) tl.classList.remove('live');
+  const fill = document.getElementById('radio-tl-fill');
+  const handle = document.getElementById('radio-tl-handle');
+  const curEl = document.getElementById('radio-time-cur');
+  const durEl = document.getElementById('radio-time-dur');
+  if (fill) fill.style.width = '0%';
+  if (handle) handle.style.left = '0%';
+  if (curEl) curEl.textContent = '0:00';
+  if (durEl) durEl.textContent = '--:--';
+}
+
+// Show/hide the inline scrubber. Opening swaps the marquee title for the groove;
+// closing restores it. Toggles when `open` is omitted.
+function toggleTimeline(open) {
+  tlOpen = (open === undefined) ? !tlOpen : open;
+  const seg = document.getElementById('seg-radio');
+  const tl = document.getElementById('radio-timeline');
+  if (seg) seg.classList.toggle('timeline-open', tlOpen);
+  if (tl) tl.hidden = !tlOpen;
+  cancelTimelineHide(); // a fresh toggle resets any pending auto-collapse
+}
+
+// Drag-to-seek: pointer drag on the track scrubs; release issues one RadioSeek.
+// A plain click jumps to that point. stopPropagation keeps these off the
+// segment's play/pause click handler.
+(function wireSeek() {
+  const track = document.getElementById('radio-tl-track');
+  if (!track) return;
+  const fill = document.getElementById('radio-tl-fill');
+  const handle = document.getElementById('radio-tl-handle');
+
+  const fracFromEvent = (e) => {
+    const r = track.getBoundingClientRect();
+    if (r.width <= 0) return 0;
+    return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  };
+  const paint = (frac) => {
+    if (fill) fill.style.width = (frac * 100) + '%';
+    if (handle) handle.style.left = (frac * 100) + '%';
+    const curEl = document.getElementById('radio-time-cur');
+    if (curEl && curDur > 0) curEl.textContent = fmtTime(frac * curDur);
+  };
+
+  track.addEventListener('pointerdown', (e) => {
+    if (curDur <= 0) return; // livestream: not seekable
+    e.stopPropagation();
+    e.preventDefault();
+    tlDragging = true;
+    try { track.setPointerCapture(e.pointerId); } catch (_) {}
+    paint(fracFromEvent(e));
+  });
+  track.addEventListener('pointermove', (e) => {
+    if (!tlDragging) return;
+    e.stopPropagation();
+    paint(fracFromEvent(e));
+  });
+  track.addEventListener('pointerup', async (e) => {
+    if (!tlDragging) return;
+    e.stopPropagation();
+    tlDragging = false;
+    try { track.releasePointerCapture(e.pointerId); } catch (_) {}
+    const frac = fracFromEvent(e);
+    if (curDur > 0) {
+      try { await RadioSeek(frac * curDur); }
+      catch (err) { console.error('RadioSeek failed:', err); }
+    }
+  });
+  track.addEventListener('pointercancel', () => { tlDragging = false; });
+})();
+
 // Receive and handle state from native player
 Events.On('radio:state', (event) => {
   const data = event ? event.data : null;
@@ -497,6 +624,13 @@ Events.On('radio:state', (event) => {
   // Filter to the active station: the engine stamps each event with its index
   // (the playing videoID changes per track as the queue auto-advances).
   if (typeof data.stationIdx === 'number' && data.stationIdx !== activeStationIdx) {
+    return;
+  }
+  // Throttled playhead tick (not a state transition): move the seek timeline
+  // without disturbing the status/marquee. Ignored mid-drag so the handle the
+  // user is holding doesn't snap back.
+  if (data.progress) {
+    if (!tlDragging) updateTimeline(data.position || 0, data.duration || 0);
     return;
   }
   switch (data.state) {
@@ -576,6 +710,7 @@ async function cycleStation(dir) {
   activeStationIdx = (activeStationIdx + dir + stations.length) % stations.length;
   try { await SetActiveStation(activeStationIdx); } catch (e) { /* non-fatal */ }
   updateTrackNavUI(); // the new station may differ in skippability
+  resetTimeline();    // clear the scrubber for the new station
 
   if (wasPlaying) {
     try {
@@ -596,6 +731,12 @@ radioSeg.addEventListener('click', async (e) => {
   if (e.target.id === 'btn-radio-next') { await cycleStation(+1); return; }
   if (e.target.id === 'btn-radio-track-prev') { await trackPrev(); return; }
   if (e.target.id === 'btn-radio-track-next') { await trackNext(); return; }
+  // Title reveals the seek timeline; the left time read-out (where the title
+  // was) collapses it. Clicks on the track itself are handled by the pointer
+  // (drag/seek) handlers — swallow them here so they don't toggle play/pause.
+  if (e.target.id === 'radio-title') { toggleTimeline(true); return; }
+  if (e.target.id === 'radio-time-cur') { toggleTimeline(false); return; }
+  if (e.target.closest('#radio-tl-track')) return;
   if (e.target.closest('#btn-radio-shuffle')) { await toggleShuffle(); return; }
   if (e.target.id === 'radio-vol' || e.target.id === 'radio-vol-lbl') {
     await cycleVolume();
@@ -609,6 +750,11 @@ radioSeg.addEventListener('wheel', async (e) => {
   const diff = e.deltaY < 0 ? 5 : -5;
   await setVolume(currentVolume + diff);
 }, { passive: false });
+
+// Auto-collapse the scrubber back to the name shortly after the cursor leaves
+// the radio segment; cancel the countdown the moment it returns.
+radioSeg.addEventListener('mouseleave', () => { if (tlOpen) scheduleTimelineHide(); });
+radioSeg.addEventListener('mouseenter', cancelTimelineHide);
 
 updateVolumeUI();
 setRadioStatus('off');

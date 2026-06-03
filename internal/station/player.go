@@ -224,6 +224,17 @@ func (s *StationPlayer) OnAudioEvent(ev audio.Event) {
 		actGiveUp
 	)
 
+	// Progress ticks (advancing playhead, same playback state) are forwarded
+	// straight to the frontend stamped with the active station — they must not
+	// run the advance/skip/failStreak machine.
+	if ev.Progress {
+		s.mu.Lock()
+		ev.StationIdx = s.activeIdx
+		s.mu.Unlock()
+		s.forward(ev)
+		return
+	}
+
 	s.mu.Lock()
 	activeIdx := s.activeIdx
 	epoch := s.epoch

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,6 +63,11 @@ while ($line = [Console]::ReadLine()) {
             $player.Pause()
         } elseif ($line -eq "stop") {
             $player.Pause()
+        } elseif ($line -like "seek *") {
+            $secStr = $line.Substring(5)
+            $sec = [double]::Parse($secStr, [Globalization.CultureInfo]::InvariantCulture)
+            if ($sec -lt 0.0) { $sec = 0.0 }
+            $player.PlaybackSession.Position = [TimeSpan]::FromSeconds($sec)
         } elseif ($line -like "volume *") {
             $volStr = $line.Substring(7)
             $vol = [double]$volStr
@@ -73,11 +79,16 @@ while ($line = [Console]::ReadLine()) {
             $st = $sess.PlaybackState
             $dur = $sess.NaturalDuration.TotalSeconds
             $pos = $sess.Position.TotalSeconds
+            # Invariant-culture formatting so Go's strconv.ParseFloat never sees a
+            # locale decimal comma.
+            $ic = [Globalization.CultureInfo]::InvariantCulture
+            $posStr = ([double]$pos).ToString("0.###", $ic)
+            $durStr = ([double]$dur).ToString("0.###", $ic)
             if (-not $script:endedReported -and $dur -gt 0 -and $pos -ge ($dur - 0.5) -and "$st" -eq "Paused") {
                 $script:endedReported = $true
-                Write-Host "STATE:Ended"
+                Write-Host "STATE:Ended|POS:$posStr|DUR:$durStr"
             } else {
-                Write-Host "STATE:$st"
+                Write-Host "STATE:$st|POS:$posStr|DUR:$durStr"
             }
         } elseif ($line -eq "exit") {
             break
@@ -127,8 +138,9 @@ func (p *WindowsPlayer) readStdout(r io.Reader) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "STATE:") {
-			stateStr := strings.TrimPrefix(line, "STATE:")
-			p.handlePlayState(stateStr)
+			// Format: STATE:<st>|POS:<pos>|DUR:<dur>
+			stateStr, pos, dur := parseStateLine(strings.TrimPrefix(line, "STATE:"))
+			p.handlePlayState(stateStr, pos, dur)
 		} else if strings.HasPrefix(line, "ERROR:") {
 			errStr := strings.TrimPrefix(line, "ERROR:")
 			p.emit(Event{State: StateError, Err: errStr})
@@ -138,16 +150,31 @@ func (p *WindowsPlayer) readStdout(r io.Reader) {
 	}
 }
 
-func (p *WindowsPlayer) handlePlayState(stateStr string) {
+// parseStateLine splits the "<st>|POS:<pos>|DUR:<dur>" payload (POS/DUR optional)
+// into the WinRT playback-state name plus position/duration in seconds.
+func parseStateLine(payload string) (state string, pos, dur float64) {
+	parts := strings.Split(payload, "|")
+	state = parts[0]
+	for _, part := range parts[1:] {
+		if v, ok := strings.CutPrefix(part, "POS:"); ok {
+			pos, _ = strconv.ParseFloat(v, 64)
+		} else if v, ok := strings.CutPrefix(part, "DUR:"); ok {
+			dur, _ = strconv.ParseFloat(v, 64)
+		}
+	}
+	return state, pos, dur
+}
+
+func (p *WindowsPlayer) handlePlayState(stateStr string, pos, dur float64) {
 	switch stateStr {
 	case "None":
 		p.emit(Event{State: StateIdle})
 	case "Opening", "Buffering":
 		p.emit(Event{State: StateLoading})
 	case "Playing":
-		p.emit(Event{State: StatePlaying})
+		p.emit(Event{State: StatePlaying, Position: pos, Duration: dur})
 	case "Paused":
-		p.emit(Event{State: StatePaused})
+		p.emit(Event{State: StatePaused, Position: pos, Duration: dur})
 	case "Ended":
 		// Natural end-of-track (drained from the MediaEnded flag by the poll).
 		p.emit(Event{State: StateEnded})
@@ -206,6 +233,19 @@ func (p *WindowsPlayer) Stop() error {
 		return fmt.Errorf("player not initialized or closed")
 	}
 	_, err := fmt.Fprintln(p.stdin, "stop")
+	return err
+}
+
+func (p *WindowsPlayer) Seek(seconds float64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.stdin == nil {
+		return fmt.Errorf("player not initialized or closed")
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	_, err := fmt.Fprintf(p.stdin, "seek %f\n", seconds)
 	return err
 }
 

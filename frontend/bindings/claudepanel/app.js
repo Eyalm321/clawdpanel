@@ -255,6 +255,17 @@ export function RadioPrev() {
 }
 
 /**
+ * RadioSeek jumps the currently-playing track to the given offset in seconds.
+ * Driven by the bar's seek timeline. No-op when radio is disabled or nothing is
+ * loaded; ignored for livestreams by the underlying player.
+ * @param {number} seconds
+ * @returns {$CancellablePromise<void>}
+ */
+export function RadioSeek(seconds) {
+    return $Call.ByID(3754337124, seconds);
+}
+
+/**
  * RadioSetShuffle toggles shuffle mode for the station at index, persists it to
  * config, and applies it live to the station engine. It is a pure mode toggle:
  * it changes only the random-order setting and never starts or jumps playback,

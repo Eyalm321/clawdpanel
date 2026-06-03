@@ -149,6 +149,12 @@ func (p *LinuxPlayer) SetVolume(v float64) error {
 	return nil
 }
 
+// Seek is not yet wired on Linux (TODO: gst_element_seek_simple with
+// GST_FORMAT_TIME). The bar's timeline degrades to read-only here.
+func (p *LinuxPlayer) Seek(seconds float64) error {
+	return nil
+}
+
 func (p *LinuxPlayer) monitorBus() {
 	defer p.wg.Done()
 

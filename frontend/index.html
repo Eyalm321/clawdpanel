@@ -83,7 +83,17 @@
       <div class="seg seg--nodrag" id="seg-radio" title="« » switches station, ‹ › skips track (grayed out for single-track / livestream stations). ▶/⏸ play/pause (resumes where you left off). Shuffle toggles random play order. Scroll/click VOL to adjust volume.">
         <span class="arrow" id="btn-radio-prev" title="Previous station">«</span>
         <span class="arrow" id="btn-radio-track-prev" title="Previous track">‹</span>
-        <div class="radio-title-wrap"><span class="lbl" id="radio-title">CLAUDE FM</span></div>
+        <div class="radio-title-wrap" id="radio-title-wrap">
+          <span class="lbl" id="radio-title" title="Show timeline">CLAUDE FM</span>
+          <div class="radio-timeline" id="radio-timeline" hidden>
+            <span class="radio-time" id="radio-time-cur" title="Hide timeline">0:00</span>
+            <div class="radio-tl-track" id="radio-tl-track" title="Seek">
+              <div class="radio-tl-fill" id="radio-tl-fill"></div>
+              <div class="radio-tl-handle" id="radio-tl-handle"></div>
+            </div>
+            <span class="radio-time" id="radio-time-dur">0:00</span>
+          </div>
+        </div>
         <span class="arrow" id="btn-radio-track-next" title="Next track">›</span>
         <span class="arrow" id="btn-radio-next" title="Next station">»</span>
         <span class="radio-btn" id="radio-status" title="Play">
