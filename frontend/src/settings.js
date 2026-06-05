@@ -3,7 +3,7 @@
 // Go opens this window (frameless) from the tray "Configure…" items and tells
 // it which panel to show — via the URL on first load, and via the
 // "settings:show" event for subsequent opens / panel switches. The shell renders
-// the ClaudePanel chrome and mounts the requested panel module.
+// the ClawdPanel chrome and mounts the requested panel module.
 import './style.css';
 import { Events } from '@wailsio/runtime';
 import { createShell, applyTheme } from './settings/shell.js';
@@ -55,7 +55,7 @@ function boot() {
   // Track the bar's theme. localStorage is shared across the app's windows, and
   // the `storage` event fires here when the bar changes the theme.
   window.addEventListener('storage', (e) => {
-    if (e.key === 'claudepanel-theme') applyTheme();
+    if (e.key === 'clawdpanel-theme') applyTheme();
   });
 }
 

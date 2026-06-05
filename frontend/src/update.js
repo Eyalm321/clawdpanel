@@ -1,6 +1,6 @@
 import { Window, Events } from '@wailsio/runtime';
 import { applyTheme } from './settings/shell.js';
-import { GetLastUpdateResult, InstallUpdate } from '../bindings/claudepanel/app.js';
+import { GetLastUpdateResult, InstallUpdate } from '../bindings/clawdpanel/app.js';
 
 let updateInfo = null;
 

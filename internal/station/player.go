@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"claudepanel/internal/audio"
-	"claudepanel/internal/config"
+	"clawdpanel/internal/audio"
+	"clawdpanel/internal/config"
 )
 
 func init() {

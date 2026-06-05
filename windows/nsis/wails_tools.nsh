@@ -5,10 +5,10 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "claudepanel"
+    !define INFO_PROJECTNAME "clawdpanel"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "ClaudePanel"
+    !define INFO_COMPANYNAME "ClawdPanel"
 !endif
 !ifndef INFO_PRODUCTNAME
     !define INFO_PRODUCTNAME "Claude Panel"

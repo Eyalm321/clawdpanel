@@ -14,15 +14,15 @@ import (
 	"sync"
 	"time"
 
-	"claudepanel/internal/audio"
-	"claudepanel/internal/claude"
-	"claudepanel/internal/config"
-	"claudepanel/internal/platform"
-	"claudepanel/internal/radio"
-	"claudepanel/internal/reveal"
-	"claudepanel/internal/station"
-	"claudepanel/internal/terminal"
-	"claudepanel/internal/tray"
+	"clawdpanel/internal/audio"
+	"clawdpanel/internal/claude"
+	"clawdpanel/internal/config"
+	"clawdpanel/internal/platform"
+	"clawdpanel/internal/radio"
+	"clawdpanel/internal/reveal"
+	"clawdpanel/internal/station"
+	"clawdpanel/internal/terminal"
+	"clawdpanel/internal/tray"
 
 	"context"
 
@@ -90,7 +90,7 @@ type App struct {
 }
 
 func NewApp() *App {
-	// Redirect log output to %APPDATA%\ClaudePanel\debug.log for crash diagnosis.
+	// Redirect log output to %APPDATA%\ClawdPanel\debug.log for crash diagnosis.
 	logPath := filepath.Join(config.AppDataDir(), "debug.log")
 	_ = os.MkdirAll(config.AppDataDir(), 0755)
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
@@ -361,7 +361,7 @@ func (a *App) Quit() {
 	a.app.Quit()
 }
 
-// ToggleBrandMenu opens the small dropdown anchored under the ClaudePanel brand
+// ToggleBrandMenu opens the small dropdown anchored under the ClawdPanel brand
 // icon, or closes it if it's already open. Like the settings popup it's a
 // separate frameless window — the 28-px bar has no room to draw a menu and clips
 // its own overflow. Created lazily, hidden (not destroyed) on close, and
@@ -461,8 +461,8 @@ type UpdateCheckResult struct {
 }
 
 const (
-	releasesAPIURL  = "https://api.github.com/repos/Eyalm321/claudepanel/releases/latest"
-	releasesPageURL = "https://github.com/Eyalm321/claudepanel/releases/latest"
+	releasesAPIURL  = "https://api.github.com/repos/Eyalm321/clawdpanel/releases/latest"
+	releasesPageURL = "https://github.com/Eyalm321/clawdpanel/releases/latest"
 )
 
 func isNewerVersion(latest, current string) bool {
@@ -544,7 +544,7 @@ func (a *App) CheckForUpdates() UpdateCheckResult {
 		return res
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "claudepanel")
+	req.Header.Set("User-Agent", "clawdpanel")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -655,7 +655,7 @@ func (a *App) InstallUpdate(downloadURL string) error {
 	log.Printf("[Updater] Starting seamless update download from: %s", downloadURL)
 
 	tempDir := os.TempDir()
-	tempInstallerPath := filepath.Join(tempDir, "ClaudePanel-setup-temp.exe")
+	tempInstallerPath := filepath.Join(tempDir, "ClawdPanel-setup-temp.exe")
 
 	resp, err := http.Get(downloadURL)
 	if err != nil {

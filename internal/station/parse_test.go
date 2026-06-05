@@ -3,7 +3,7 @@ package station
 import (
 	"testing"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 func TestParseItem(t *testing.T) {

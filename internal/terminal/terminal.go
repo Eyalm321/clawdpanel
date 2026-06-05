@@ -2,7 +2,7 @@
 // (default `claude`) in a chosen directory, with a name as the window/tab
 // title and a color applied. It is the deliberate inverse of internal/audio,
 // which spawns a HIDDEN helper: here the spawned process must be VISIBLE and
-// must outlive ClaudePanel (detached, never Wait()ed).
+// must outlive ClawdPanel (detached, never Wait()ed).
 //
 // Color is conveyed uniformly across every OS by prepending the nearest
 // colored-circle emoji to the title (e.g. "🔵 CRM"), so it reads in the tab
@@ -28,7 +28,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 // Preset describes how to invoke one terminal program. Args are split around an
@@ -397,7 +397,7 @@ func rewriteHyperShell(content, shellLine, argsLine string) string {
 }
 
 // Launch resolves the entry to a command and starts it detached so the new
-// terminal outlives ClaudePanel. It never Wait()s. The child's working
+// terminal outlives ClawdPanel. It never Wait()s. The child's working
 // directory is set when the configured dir exists, which also gives the `cmd`
 // preset its working directory without fragile cmd.exe quoting.
 func Launch(entry config.TerminalConfig, launcher config.LauncherConfig, opts LaunchOpts) error {

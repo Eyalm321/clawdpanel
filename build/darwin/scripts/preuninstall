@@ -1,14 +1,14 @@
 #!/bin/bash
-# preuninstall — invoked when removing ClaudePanel via a separate uninstall
+# preuninstall — invoked when removing ClawdPanel via a separate uninstall
 # helper. Apple's `installer` does not support .pkg uninstall natively, so
 # this script is shipped alongside the app bundle and referenced by the
-# in-app "Uninstall ClaudePanel" action documented in README.
+# in-app "Uninstall ClawdPanel" action documented in README.
 
 set -u
 
 TARGET_USER="${USER:-$(stat -f '%Su' /dev/console 2>/dev/null || echo '')}"
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
-    echo "ClaudePanel preuninstall: could not determine GUI user; skipping statusline removal."
+    echo "ClawdPanel preuninstall: could not determine GUI user; skipping statusline removal."
     exit 0
 fi
 
@@ -44,7 +44,7 @@ try:
     with os.fdopen(tmp_fd, "w") as f:
         json.dump(settings, f, indent=2)
     os.replace(tmp_path, path)
-    print(f"ClaudePanel: statusline {mode} complete ({path})")
+    print(f"ClawdPanel: statusline {mode} complete ({path})")
 except Exception:
     try:
         os.unlink(tmp_path)

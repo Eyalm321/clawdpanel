@@ -3,21 +3,21 @@
 #   nfpm package -f build/linux/nfpm.yaml -p deb -t ./dist
 #   nfpm package -f build/linux/nfpm.yaml -p rpm -t ./dist
 #
-# Assumes the Linux binary has already been produced at build/bin/claudepanel
+# Assumes the Linux binary has already been produced at build/bin/clawdpanel
 # by `wails build -platform linux/amd64`.
 
-name: claudepanel
+name: clawdpanel
 arch: amd64
 platform: linux
 version: ${VERSION}
 section: utils
 priority: optional
-maintainer: ClaudePanel <noreply@example.com>
+maintainer: ClawdPanel <noreply@example.com>
 description: |
   Lightweight always-on-top desktop bar that displays Claude Code usage
   across multiple accounts with a retro terminal aesthetic.
-vendor: ClaudePanel
-homepage: https://github.com/anthropics/claudepanel
+vendor: ClawdPanel
+homepage: https://github.com/anthropics/clawdpanel
 license: MIT
 
 depends:
@@ -35,14 +35,14 @@ recommends:
   - nodejs       # required for the statusline command to run
 
 contents:
-  - src: ./bin/claudepanel
-    dst: /usr/bin/claudepanel
+  - src: ./bin/clawdpanel
+    dst: /usr/bin/clawdpanel
     file_info:
       mode: 0755
-  - src: ./build/linux/claudepanel.desktop
-    dst: /usr/share/applications/claudepanel.desktop
+  - src: ./build/linux/clawdpanel.desktop
+    dst: /usr/share/applications/clawdpanel.desktop
   - src: ./build/linux/icon.png
-    dst: /usr/share/icons/hicolor/256x256/apps/claudepanel.png
+    dst: /usr/share/icons/hicolor/256x256/apps/clawdpanel.png
 
 scripts:
   postinstall: ./build/linux/scripts/postinstall.sh

@@ -1,4 +1,4 @@
-# ClaudePanel
+# ClawdPanel
 
 A retro-styled desktop HUD for Claude Code (Wails v3, Go backend + WebView frontend).
 
@@ -6,7 +6,7 @@ A retro-styled desktop HUD for Claude Code (Wails v3, Go backend + WebView front
 
 ### Issue tracker
 
-Issues live as GitHub issues in `Eyalm321/claudepanel`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live as GitHub issues in `Eyalm321/clawdpanel`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

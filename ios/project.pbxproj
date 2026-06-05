@@ -97,7 +97,7 @@
 			isa = PBXProject;
 			attributes = {
 				LastUpgradeCheck = 1500;
-				ORGANIZATIONNAME = "ClaudePanel";
+				ORGANIZATIONNAME = "ClawdPanel";
 				TargetAttributes = {
 					C0DEBEEF0000000000000040 = {
 						CreatedOnToolsVersion = 15.0;
@@ -176,7 +176,7 @@
 			buildSettings = {
 				INFOPLIST_FILE = main/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.claudepanel.pkg";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.clawdpanel.pkg";
 				PRODUCT_NAME = "Claude Panel";
 				CODE_SIGNING_ALLOWED = NO;
 				SDKROOT = iphonesimulator;
@@ -188,7 +188,7 @@
 			buildSettings = {
 				INFOPLIST_FILE = main/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.claudepanel.pkg";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.clawdpanel.pkg";
 				PRODUCT_NAME = "Claude Panel";
 				CODE_SIGNING_ALLOWED = NO;
 				SDKROOT = iphonesimulator;

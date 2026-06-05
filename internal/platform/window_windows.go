@@ -259,13 +259,13 @@ func ResetDwmFrame(hwnd uintptr) {
 func AutoHideSupported() bool { return true }
 
 // IsFullScreenActive reports whether a borderless, full-monitor window is the
-// foreground window on claudebar's monitor (mon) — the Windows analogue of the
+// foreground window on the bar's monitor (mon) — the Windows analogue of the
 // macOS hide-on-fullscreen behaviour. The reveal machine gives this top
 // precedence (above pinned), so a true positive collapses the bar even while
 // it's pinned, and it restores once the fullscreen window goes away.
 //
 // Detection is a monitor-bounds comparison, not the WS_EX_TOPMOST heuristic the
-// old stub's comment floated — topmost is noisy (claudebar itself is topmost):
+// old stub's comment floated — topmost is noisy (the bar itself is topmost):
 //
 //   - the foreground window must exist and not be the shell/desktop. Progman /
 //     WorkerW cover the whole monitor and carry no caption, so they'd otherwise
@@ -297,7 +297,7 @@ func IsFullScreenActive(mon MonitorInfo) bool {
 		return false
 	}
 
-	// Which monitor is it on, and is that claudebar's monitor?
+	// Which monitor is it on, and is that the bar's monitor?
 	hmon, _, _ := procMonitorFromWindow.Call(fg, monitorDefaultToNull)
 	if hmon == 0 {
 		return false

@@ -2,7 +2,7 @@
 // (main.js). A station has a NAME and an ordered list of video/playlist URLs.
 // URLs are validated server-side via ParseStationItem on save. (Shuffle is no
 // longer a per-station setting — it's the bar's one-shot shuffle button.)
-import { GetConfig, SaveConfig, ParseStationItem } from '../../bindings/claudepanel/app.js';
+import { GetConfig, SaveConfig, ParseStationItem } from '../../bindings/clawdpanel/app.js';
 
 export default {
   id: 'stations',

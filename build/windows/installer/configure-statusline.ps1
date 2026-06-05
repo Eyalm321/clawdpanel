@@ -39,7 +39,7 @@ if (Test-Path $SettingsPath) {
             $settings = $raw | ConvertFrom-Json -ErrorAction Stop
         }
     } catch {
-        Write-Warning "ClaudePanel: $SettingsPath is not valid JSON; skipping statusline configuration."
+        Write-Warning "ClawdPanel: $SettingsPath is not valid JSON; skipping statusline configuration."
         exit 0
     }
 } else {
@@ -62,4 +62,4 @@ $json = $bag | ConvertTo-Json -Depth 32
 $tmp = "$SettingsPath.tmp"
 Set-Content -LiteralPath $tmp -Value $json -Encoding UTF8
 Move-Item -Force -LiteralPath $tmp -Destination $SettingsPath
-Write-Output "ClaudePanel: statusline $Mode complete ($SettingsPath)"
+Write-Output "ClawdPanel: statusline $Mode complete ($SettingsPath)"

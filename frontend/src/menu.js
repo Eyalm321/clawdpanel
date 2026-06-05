@@ -1,13 +1,13 @@
 // Entry point for the brand-icon dropdown (menu.html).
 //
-// Go opens this small frameless window anchored under the ClaudePanel brand icon
+// Go opens this small frameless window anchored under the ClawdPanel brand icon
 // (see App.OpenBrandMenu) and auto-hides it on focus loss. It offers two actions:
 // "Check for updates" (queries the latest GitHub release) and "Exit" (quits the
 // app). The window is hidden, not destroyed, so its state persists between opens.
 import './style.css';
 import { Browser } from '@wailsio/runtime';
 import { applyTheme } from './settings/shell.js';
-import { CheckForUpdates, Quit, CloseBrandMenu } from '../bindings/claudepanel/app.js';
+import { CheckForUpdates, Quit, CloseBrandMenu } from '../bindings/clawdpanel/app.js';
 
 let checking = false;
 
@@ -56,7 +56,7 @@ function boot() {
 
   // Track the bar's theme — localStorage is shared across the app's windows.
   window.addEventListener('storage', (e) => {
-    if (e.key === 'claudepanel-theme') applyTheme();
+    if (e.key === 'clawdpanel-theme') applyTheme();
   });
 
   // Reset the transient hint + status glyph each time the menu is reopened (the

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-const launchAgentLabel = "com.claudepanel.app"
+const launchAgentLabel = "com.clawdpanel.app"
 
 func launchAgentPath() (string, error) {
 	home, err := os.UserHomeDir()

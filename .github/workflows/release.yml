@@ -17,15 +17,15 @@ jobs:
         include:
           - os: windows-latest
             name: Windows
-            artifact: claudepanel-windows-installer
+            artifact: clawdpanel-windows-installer
             allow_failure: false
           - os: macos-latest
             name: macOS
-            artifact: claudepanel-macos-pkg
+            artifact: clawdpanel-macos-pkg
             allow_failure: false
           - os: ubuntu-latest
             name: Linux
-            artifact: claudepanel-linux
+            artifact: clawdpanel-linux
             allow_failure: false
 
     runs-on: ${{ matrix.os }}
@@ -92,7 +92,7 @@ jobs:
           # Match whatever Wails NSIS produced (filename includes outputfilename + arch).
           $installer = Get-ChildItem bin -Filter '*installer*.exe' | Select-Object -First 1
           if (-not $installer) { throw "No installer .exe found in bin" }
-          Copy-Item $installer.FullName "dist\ClaudePanel-${{ steps.version.outputs.semver }}-windows-amd64-setup.exe"
+          Copy-Item $installer.FullName "dist\ClawdPanel-${{ steps.version.outputs.semver }}-windows-amd64-setup.exe"
 
       # ── macOS ──
       - name: Build macOS app bundle
@@ -104,16 +104,16 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           mkdir -p pkgroot/Applications
-          cp -R bin/ClaudePanel.app pkgroot/Applications/
+          cp -R bin/ClawdPanel.app pkgroot/Applications/
           chmod +x build/darwin/scripts/postinstall build/darwin/scripts/preuninstall
           mkdir -p dist
           pkgbuild \
             --root pkgroot \
             --install-location / \
             --scripts build/darwin/scripts \
-            --identifier com.claudepanel.pkg \
+            --identifier com.clawdpanel.pkg \
             --version "${{ steps.version.outputs.semver }}" \
-            "dist/ClaudePanel-${{ steps.version.outputs.semver }}-macos-universal.pkg"
+            "dist/ClawdPanel-${{ steps.version.outputs.semver }}-macos-universal.pkg"
 
 
       - name: Build Linux binary
@@ -123,9 +123,9 @@ jobs:
 
       - name: Normalise Linux binary name to lowercase
         if: matrix.os == 'ubuntu-latest'
-        # Wails honours outputfilename ("ClaudePanel") on Linux too, but the
+        # Wails honours outputfilename ("ClawdPanel") on Linux too, but the
         # nfpm.yaml and AppImage script expect lowercase per Linux convention.
-        run: cp bin/ClaudePanel bin/claudepanel
+        run: cp bin/ClawdPanel bin/clawdpanel
 
       - name: Install nfpm
         if: matrix.os == 'ubuntu-latest'

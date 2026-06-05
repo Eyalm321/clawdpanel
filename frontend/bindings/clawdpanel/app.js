@@ -363,7 +363,7 @@ export function SetPinned(pinned) {
 }
 
 /**
- * ToggleBrandMenu opens the small dropdown anchored under the ClaudePanel brand
+ * ToggleBrandMenu opens the small dropdown anchored under the ClawdPanel brand
  * icon, or closes it if it's already open. Like the settings popup it's a
  * separate frameless window — the 28-px bar has no room to draw a menu and clips
  * its own overflow. Created lazily, hidden (not destroyed) on close, and

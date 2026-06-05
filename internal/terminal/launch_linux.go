@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 // builtinPresets for Linux, ordered by detection preference. Terminals with a
@@ -104,7 +104,7 @@ func DetectDefault() config.LauncherConfig {
 }
 
 // detachAttrs: Setsid puts the terminal in its own session so it survives
-// ClaudePanel exiting and isn't tied to our (absent) controlling terminal.
+// ClawdPanel exiting and isn't tied to our (absent) controlling terminal.
 func detachAttrs() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }

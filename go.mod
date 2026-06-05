@@ -1,4 +1,4 @@
-module claudepanel
+module clawdpanel
 
 go 1.26
 

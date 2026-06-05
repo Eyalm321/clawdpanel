@@ -2,8 +2,8 @@
 set -e
 
 # Build configuration
-APP_NAME="ClaudePanel"
-BUNDLE_ID="com.claudepanel.pkg"
+APP_NAME="ClawdPanel"
+BUNDLE_ID="com.clawdpanel.pkg"
 VERSION="0.1.0"
 BUILD_NUMBER="0.1.0"
 BUILD_DIR="build/ios"

@@ -1,6 +1,6 @@
-<p align="center"><img src="logo.png" alt="ClaudePanel logo" width="160" /></p>
+<p align="center"><img src="logo.png" alt="ClawdPanel logo" width="160" /></p>
 
-<h1 align="center">👾 ClaudePanel</h1>
+<h1 align="center">👾 ClawdPanel</h1>
 
 <p align="center"><strong>A retro-styled desktop HUD for Claude Code.</strong><br/>
 Monitor token usage, switch accounts, dock across monitors, and stream Lo-Fi radio — all from a native cross-platform utility bar.</p>
@@ -19,11 +19,11 @@ Monitor token usage, switch accounts, dock across monitors, and stream Lo-Fi rad
 
 ---
 
-## 💡 Why ClaudePanel?
+## 💡 Why ClawdPanel?
 
 A permanent lightweight desktop HUD for Claude Code users — live token monitoring, multi-account switching, cross-monitor docking, retro terminal aesthetics, ambient Lo-Fi radio, zero-browser workflow.
 
-Unlike browser dashboards or terminal-only tools, ClaudePanel lives directly in your desktop environment with native OS integrations: Windows AppBar reservation, macOS LaunchAgents, Linux `_NET_WM_STRUT_PARTIAL`, system-tray everywhere.
+Unlike browser dashboards or terminal-only tools, ClawdPanel lives directly in your desktop environment with native OS integrations: Windows AppBar reservation, macOS LaunchAgents, Linux `_NET_WM_STRUT_PARTIAL`, system-tray everywhere.
 
 ## 👤 Built for
 
@@ -42,7 +42,7 @@ Unlike browser dashboards or terminal-only tools, ClaudePanel lives directly in 
 | ![](docs/demo/themes.gif) | ![](docs/demo/hide.gif) | ![](docs/demo/fm.gif) |
 -->
 
-_Animated demos coming soon. For now, see [the bar layout above](#-claudepanel) and the [themes](#-visual-design) section below._
+_Animated demos coming soon. For now, see [the bar layout above](#-clawdpanel) and the [themes](#-visual-design) section below._
 
 ---
 
@@ -65,11 +65,11 @@ Download from the [Releases](../../releases/latest) page:
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows 10/11 x64 | `ClaudePanel-*-windows-amd64-setup.exe` | NSIS installer. Requires [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) (pre-installed on Win11). |
-| macOS 10.13+ (Intel + Apple Silicon) | `ClaudePanel-*-macos-universal.pkg` | Double-click to install to `/Applications`. |
-| Debian / Ubuntu | `claudepanel_*_amd64.deb` | `sudo apt install ./claudepanel_*_amd64.deb` |
-| Fedora / RHEL | `claudepanel-*.x86_64.rpm` | `sudo dnf install ./claudepanel-*.x86_64.rpm` |
-| Any Linux (portable) | `ClaudePanel-x86_64.AppImage` | `chmod +x ClaudePanel-x86_64.AppImage && ./ClaudePanel-x86_64.AppImage` |
+| Windows 10/11 x64 | `ClawdPanel-*-windows-amd64-setup.exe` | NSIS installer. Requires [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) (pre-installed on Win11). |
+| macOS 10.13+ (Intel + Apple Silicon) | `ClawdPanel-*-macos-universal.pkg` | Double-click to install to `/Applications`. |
+| Debian / Ubuntu | `clawdpanel_*_amd64.deb` | `sudo apt install ./clawdpanel_*_amd64.deb` |
+| Fedora / RHEL | `clawdpanel-*.x86_64.rpm` | `sudo dnf install ./clawdpanel-*.x86_64.rpm` |
+| Any Linux (portable) | `ClawdPanel-x86_64.AppImage` | `chmod +x ClawdPanel-x86_64.AppImage && ./ClawdPanel-x86_64.AppImage` |
 
 Installers wire up Claude Code's `statuslineCommand` automatically and clean it up on uninstall — no terminal commands needed. AppImage users get a one-time first-run prompt instead.
 
@@ -77,7 +77,7 @@ Installers wire up Claude Code's `statuslineCommand` automatically and clean it 
 <summary><strong>First-launch security warnings (unsigned v1)</strong></summary>
 
 - **Windows** → SmartScreen "Windows protected your PC" → *More info* → *Run anyway*
-- **macOS** → "ClaudePanel cannot be opened…" → System Settings → Privacy & Security → *Open Anyway*, or right-click the .app → *Open*
+- **macOS** → "ClawdPanel cannot be opened…" → System Settings → Privacy & Security → *Open Anyway*, or right-click the .app → *Open*
 - **Linux .deb/.rpm** → no warnings (root install)
 - **AppImage** → no warnings (user-mode)
 
@@ -178,7 +178,7 @@ Claude Code (CLI)
        │
        │  filesystem poll (refreshSeconds)
        ▼
-ClaudePanel backend (Go)
+ClawdPanel backend (Go)
        │
        │  Wails IPC (JSON bindings)
        ▼
@@ -196,9 +196,9 @@ Auto-created on first run:
 
 | Platform | Path |
 |---|---|
-| Windows | `%APPDATA%\ClaudePanel\config.json` |
-| macOS | `~/Library/Application Support/ClaudePanel/config.json` |
-| Linux | `$XDG_CONFIG_HOME/ClaudePanel/config.json` (fallback `~/.config/ClaudePanel/config.json`) |
+| Windows | `%APPDATA%\ClawdPanel\config.json` |
+| macOS | `~/Library/Application Support/ClawdPanel/config.json` |
+| Linux | `$XDG_CONFIG_HOME/ClawdPanel/config.json` (fallback `~/.config/ClawdPanel/config.json`) |
 
 ```json
 {
@@ -224,7 +224,7 @@ Auto-created on first run:
 <details>
 <summary><strong>How live usage capture works</strong></summary>
 
-ClaudePanel reads `~/.claude/rate_limits.json`, populated by Claude Code's `statuslineCommand` hook. Installers set this hook automatically and clear it on uninstall by editing `~/.claude/settings.json` (only the `statuslineCommand` key — other keys are preserved).
+ClawdPanel reads `~/.claude/rate_limits.json`, populated by Claude Code's `statuslineCommand` hook. Installers set this hook automatically and clear it on uninstall by editing `~/.claude/settings.json` (only the `statuslineCommand` key — other keys are preserved).
 
 If you built from source or are using the AppImage and want to configure manually:
 
@@ -232,7 +232,7 @@ If you built from source or are using the AppImage and want to configure manuall
 claude config set statuslineCommand "node -e \"const fs=require('fs');const p=require('path');const os=require('os');const d=fs.readFileSync(0,'utf-8');if(d){const parsed=JSON.parse(d);fs.writeFileSync(p.join(os.homedir(),'.claude','rate_limits.json'),JSON.stringify({...parsed,captured_at:Date.now()}))}\""
 ```
 
-Every Claude prompt then writes a tiny JSON payload to `rate_limits.json`, which ClaudePanel picks up instantly.
+Every Claude prompt then writes a tiny JSON payload to `rate_limits.json`, which ClawdPanel picks up instantly.
 
 </details>
 
@@ -241,7 +241,7 @@ Every Claude prompt then writes a tiny JSON payload to `rate_limits.json`, which
 ## 📁 Project Structure
 
 ```
-claudepanel/
+clawdpanel/
 ├── main.go                          # Wails bootstrap + embed directives
 ├── app.go                           # App struct + Wails-exported bindings
 ├── icon_{windows,darwin,linux}.go   # Per-OS tray icon embedding

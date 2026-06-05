@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 // decodePwsh reverses encodePwshCommand: base64 → UTF-16LE → string.

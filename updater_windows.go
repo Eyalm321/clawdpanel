@@ -17,9 +17,9 @@ func resolveRelaunchPath(currentPath string) string {
 
 	if isDev {
 		candidates := []string{
-			filepath.Join(os.Getenv("ProgramFiles"), "ClaudePanel", "claudepanel.exe"),
-			filepath.Join(os.Getenv("ProgramFiles(x86)"), "ClaudePanel", "claudepanel.exe"),
-			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "ClaudePanel", "claudepanel.exe"),
+			filepath.Join(os.Getenv("ProgramFiles"), "ClawdPanel", "clawdpanel.exe"),
+			filepath.Join(os.Getenv("ProgramFiles(x86)"), "ClawdPanel", "clawdpanel.exe"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "ClawdPanel", "clawdpanel.exe"),
 		}
 
 		for _, candidate := range candidates {
@@ -38,7 +38,7 @@ func resolveRelaunchPath(currentPath string) string {
 
 func runSilentInstaller(installerPath, appPath string) error {
 	psCommand := fmt.Sprintf(
-		`Start-Sleep -Seconds 1; Stop-Process -Name "ClaudePanel", "claudepanel" -Force -ErrorAction SilentlyContinue; Start-Process -FilePath "%s" -ArgumentList "/S" -Verb RunAs -Wait; Start-Process -FilePath "%s"`,
+		`Start-Sleep -Seconds 1; Stop-Process -Name "ClawdPanel", "clawdpanel" -Force -ErrorAction SilentlyContinue; Start-Process -FilePath "%s" -ArgumentList "/S" -Verb RunAs -Wait; Start-Process -FilePath "%s"`,
 		installerPath, appPath,
 	)
 

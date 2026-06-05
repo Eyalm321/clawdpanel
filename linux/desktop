@@ -3,11 +3,11 @@ Version=1.0
 Name=Claude Panel
 Comment=Claude Code Usage Panel
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/ClaudePanel %u
+Exec=/usr/local/bin/ClawdPanel %u
 Terminal=false
 Type=Application
-Icon=ClaudePanel
+Icon=ClawdPanel
 Categories=Utility;
-StartupWMClass=ClaudePanel
+StartupWMClass=ClawdPanel
 
  

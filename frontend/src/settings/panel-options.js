@@ -3,7 +3,7 @@
 // "config:changed", which re-renders the bar AND (for Radio) brings the backing
 // resource up/down on the Go side — disabling Radio stops the native audio
 // engine, not just the segment.
-import { GetConfig, SaveConfig } from '../../bindings/claudepanel/app.js';
+import { GetConfig, SaveConfig } from '../../bindings/clawdpanel/app.js';
 
 // key → label, in display order. Keys match config.FeatureConfig json tags.
 const FEATURES = [

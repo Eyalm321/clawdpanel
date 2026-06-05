@@ -6,7 +6,7 @@ import "golang.org/x/sys/windows/registry"
 
 const (
 	startupRegKey  = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
-	startupAppName = "ClaudePanel"
+	startupAppName = "ClawdPanel"
 )
 
 func SetStartOnLogin(enabled bool, exePath string) error {

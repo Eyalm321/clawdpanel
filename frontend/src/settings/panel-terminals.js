@@ -3,7 +3,7 @@
 // single global launcher PROGRAM; choosing "custom" reveals exe/args.
 import {
   GetConfig, SaveConfig, ListTerminalPresets, DetectTerminal, PickDirectory,
-} from '../../bindings/claudepanel/app.js';
+} from '../../bindings/clawdpanel/app.js';
 
 export default {
   id: 'terminals',

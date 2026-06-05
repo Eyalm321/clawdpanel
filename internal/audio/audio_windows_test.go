@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"claudepanel/internal/radio"
+	"clawdpanel/internal/radio"
 )
 
 func TestWinRTPlayer_Real(t *testing.T) {
