@@ -152,8 +152,9 @@ func SetOpacity(hwnd uintptr, opacity float64) {
 		"-set", "_NET_WM_WINDOW_OPACITY", strconv.FormatUint(uint64(alpha), 10)).Run()
 }
 
-// IsFullScreenActive: stub on Linux.
-func IsFullScreenActive() bool { return false }
+// IsFullScreenActive: stub on Linux. The mon argument matches the Windows
+// signature (which scopes detection to claudebar's display) but is unused here.
+func IsFullScreenActive(MonitorInfo) bool { return false }
 
 // AutoHideSupported is false on Linux — the slide-up animation primitives
 // aren't wired up at v1.
@@ -164,8 +165,6 @@ func GetCursorPos() (int, int) { return -1, -1 }
 
 // ResetDwmFrame is a Windows-only concept; no-op elsewhere.
 func ResetDwmFrame(hwnd uintptr) {}
-
-
 
 // HideWindow / ShowWindow no-op on Linux for now (auto-hide is Windows-only v1).
 func HideWindow(hwnd uintptr) {}

@@ -106,7 +106,12 @@ func startFullscreenWatcher() {
 // macOS native fullscreen mode. Updated by an NSWorkspace observer on each
 // Space change; the very first call lazily starts the observer. Cheap to
 // call frequently — just an atomic int read after init.
-func IsFullScreenActive() bool {
+//
+// The mon argument (claudebar's monitor) is accepted for parity with the
+// Windows implementation, which scopes detection to a single display, but is
+// ignored here: macOS fullscreen is a per-Space concept the observer already
+// tracks globally, not a per-display bounds check.
+func IsFullScreenActive(_ MonitorInfo) bool {
 	startFullscreenWatcher()
 	return C.platformIsFullScreenActive() != 0
 }

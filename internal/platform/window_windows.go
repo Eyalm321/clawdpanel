@@ -21,6 +21,10 @@ var (
 	procGetCursorPos               = user32.NewProc("GetCursorPos")
 	procShowWindow                 = user32.NewProc("ShowWindow")
 	procSetWindowRgn               = user32.NewProc("SetWindowRgn")
+	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
+	procMonitorFromWindow          = user32.NewProc("MonitorFromWindow")
+	procGetShellWindow             = user32.NewProc("GetShellWindow")
+	procGetClassNameW              = user32.NewProc("GetClassNameW")
 
 	gdi32             = syscall.NewLazyDLL("gdi32.dll")
 	procCreateRectRgn = gdi32.NewProc("CreateRectRgn")
@@ -72,6 +76,8 @@ const (
 	abmQuerypos = uintptr(0x00000002)
 	abmSetpos   = uintptr(0x00000003)
 	abeTop      = uint32(1)
+
+	monitorDefaultToNull = uintptr(0) // MONITOR_DEFAULTTONULL
 )
 
 type appBarData struct {
@@ -108,7 +114,6 @@ func findVisibleWindowByPID(pid uint32) uintptr {
 	procEnumWindows.Call(cb, 0)
 	return found
 }
-
 
 func ApplyBarStyles(hwnd uintptr) {
 	style, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlStyle)
@@ -253,11 +258,75 @@ func ResetDwmFrame(hwnd uintptr) {
 // has the full set of primitives wired up at v1.
 func AutoHideSupported() bool { return true }
 
-// IsFullScreenActive: stub. The macOS hide-on-fullscreen feature has no
-// direct analogue on Windows — apps that go fullscreen typically display on
-// their own without needing the bar to step aside. If we add it later, this
-// becomes a GetForegroundWindow + WS_EX_TOPMOST + style check.
-func IsFullScreenActive() bool { return false }
+// IsFullScreenActive reports whether a borderless, full-monitor window is the
+// foreground window on claudebar's monitor (mon) — the Windows analogue of the
+// macOS hide-on-fullscreen behaviour. The reveal machine gives this top
+// precedence (above pinned), so a true positive collapses the bar even while
+// it's pinned, and it restores once the fullscreen window goes away.
+//
+// Detection is a monitor-bounds comparison, not the WS_EX_TOPMOST heuristic the
+// old stub's comment floated — topmost is noisy (claudebar itself is topmost):
+//
+//   - the foreground window must exist and not be the shell/desktop. Progman /
+//     WorkerW cover the whole monitor and carry no caption, so they'd otherwise
+//     read as fullscreen whenever the user clicks the desktop;
+//   - it must lack WS_CAPTION. A normally-maximized titled window keeps its
+//     caption, so this is what separates "maximized" (the AppBar already tiles
+//     it below the bar) from "borderless fullscreen" (the bar must yield). It
+//     also rejects the maximize-overhang false positive when the taskbar
+//     auto-hides and a maximized window briefly spans the full bounds;
+//   - its rect must cover its monitor's full bounds; and
+//   - that monitor must be mon. A fullscreen app on another display is ignored.
+func IsFullScreenActive(mon MonitorInfo) bool {
+	fg, _, _ := procGetForegroundWindow.Call()
+	if fg == 0 {
+		return false
+	}
+	if shell, _, _ := procGetShellWindow.Call(); fg == shell {
+		return false
+	}
+	switch className(fg) {
+	case "WorkerW", "Progman":
+		return false
+	}
+
+	// Borderless? A maximized titled window keeps WS_CAPTION; a fullscreen one
+	// drops it. This is the style check, done on the right bit.
+	style, _, _ := procGetWindowLongPtrW.Call(fg, gwlStyle)
+	if style&wsCaption != 0 {
+		return false
+	}
+
+	// Which monitor is it on, and is that claudebar's monitor?
+	hmon, _, _ := procMonitorFromWindow.Call(fg, monitorDefaultToNull)
+	if hmon == 0 {
+		return false
+	}
+	var mi monitorInfoEx
+	mi.cbSize = uint32(unsafe.Sizeof(mi))
+	if ok, _, _ := procGetMonitorInfoW.Call(hmon, uintptr(unsafe.Pointer(&mi))); ok == 0 {
+		return false
+	}
+	// rcMonitor.Left/Top are the same physical pixels GetMonitors() stored as
+	// MonitorInfo.Left/Top, so equality is an exact "same display" identity.
+	if mi.rcMonitor.Left != mon.Left || mi.rcMonitor.Top != mon.Top {
+		return false
+	}
+
+	// Covers the monitor fully: equal for borderless fullscreen, exceeded by an
+	// overhanging window — both count as fullscreen.
+	var wr rect32
+	procGetWindowRect.Call(fg, uintptr(unsafe.Pointer(&wr)))
+	return wr.Left <= mi.rcMonitor.Left && wr.Top <= mi.rcMonitor.Top &&
+		wr.Right >= mi.rcMonitor.Right && wr.Bottom >= mi.rcMonitor.Bottom
+}
+
+// className returns the Win32 window-class name for hwnd, or "" on failure.
+func className(hwnd uintptr) string {
+	var buf [256]uint16
+	n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf[:n])
+}
 
 // GetCursorPos returns the current cursor position in virtual screen coords
 // (top-left of the primary monitor is 0,0). Used for hover detection because

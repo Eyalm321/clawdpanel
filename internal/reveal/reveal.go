@@ -29,7 +29,7 @@ type WindowOps interface {
 	Hide()
 	SetClickThrough(enabled bool)
 	CursorPos() (x, y int)
-	FullScreenActive() bool
+	FullScreenActive(mon platform.MonitorInfo) bool
 	AutoHideSupported() bool
 }
 
@@ -56,8 +56,10 @@ func (p platformOps) Show()                            { platform.ShowWindow(p.h
 func (p platformOps) Hide()                            { platform.HideWindow(p.hwnd) }
 func (p platformOps) SetClickThrough(e bool)           { platform.SetClickThrough(p.hwnd, e) }
 func (p platformOps) CursorPos() (int, int)            { return platform.GetCursorPos() }
-func (p platformOps) FullScreenActive() bool           { return platform.IsFullScreenActive() }
-func (p platformOps) AutoHideSupported() bool          { return platform.AutoHideSupported() }
+func (p platformOps) FullScreenActive(m platform.MonitorInfo) bool {
+	return platform.IsFullScreenActive(m)
+}
+func (p platformOps) AutoHideSupported() bool { return platform.AutoHideSupported() }
 
 func realTicker(d time.Duration) (<-chan time.Time, func()) {
 	t := time.NewTicker(d)
@@ -298,7 +300,7 @@ func (c *Controller) Tick() {
 	// Fullscreen takes precedence over pin/hover: while a frontmost app is in
 	// native fullscreen, force-collapse the bar (the tray icon stays). On
 	// platforms with no fullscreen detection this is a no-op.
-	if c.ops.FullScreenActive() {
+	if c.ops.FullScreenActive(s.mon) {
 		if c.Expanded() {
 			c.SetExpanded(false)
 		}

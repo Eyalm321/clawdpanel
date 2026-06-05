@@ -102,6 +102,24 @@ func TestTickPrecedence(t *testing.T) {
 		}
 	})
 
+	t.Run("fullscreen beats pinned", func(t *testing.T) {
+		// The whole point of Windows fullscreen detection: a borderless
+		// fullscreen app must collapse the bar even while it's pinned. Tick
+		// checks fullscreen before pinned, so this must hold.
+		fake := &fakeOps{autoHide: true}
+		c := newTestController(fake, newManualClock(), nil)
+		c.Configure(testMon(), barHeight, true, false) // pinned
+		c.Init()                                        // pinned ⇒ expanded
+		fake.mu.Lock()
+		fake.fullScreen = true
+		fake.mu.Unlock()
+
+		c.Tick()
+		if c.Expanded() {
+			t.Fatal("fullscreen must force collapse even when pinned")
+		}
+	})
+
 	t.Run("pinned forces expanded", func(t *testing.T) {
 		fake := &fakeOps{autoHide: true}
 		c := newTestController(fake, newManualClock(), nil)

@@ -50,7 +50,11 @@ func (f *fakeOps) CursorPos() (int, int) {
 	defer f.mu.Unlock()
 	return f.cursorX, f.cursorY
 }
-func (f *fakeOps) FullScreenActive() bool  { f.mu.Lock(); defer f.mu.Unlock(); return f.fullScreen }
+func (f *fakeOps) FullScreenActive(platform.MonitorInfo) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fullScreen
+}
 func (f *fakeOps) AutoHideSupported() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.autoHide }
 
 func (f *fakeOps) setPos(x, y int)    { f.mu.Lock(); f.x, f.y = x, y; f.mu.Unlock() }
