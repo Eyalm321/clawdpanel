@@ -115,10 +115,5 @@ func wrapConsoleLaunch(exe string, args []string, _ bool) (string, []string, *sy
 	return exe, args, detachAttrs()
 }
 
-func GetPreExisting(preset string) map[uintptr]bool {
-	return nil
-}
-
-func PostLaunch(preset string, entry config.TerminalConfig, title string, preExisting map[uintptr]bool) {}
 
 

@@ -20,12 +20,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
 	"unicode/utf16"
 
 	"clawdpanel/internal/config"
@@ -92,7 +89,7 @@ const (
 // covers keys from every OS so the table is stable regardless of build target.
 var presetLabels = map[string]string{
 	"windows-terminal":    "Windows Terminal",
-	"hyper":               "Hyper",
+	"hyperpanes":          "Hyperpanes",
 	"powershell":          "PowerShell",
 	"cmd":                 "Command Prompt",
 	"terminal-app":        "Terminal.app",
@@ -325,207 +322,17 @@ func build(entry config.TerminalConfig, launcher config.LauncherConfig, opts Lau
 	return p.Exe, args, nil
 }
 
-// ── Hyper single-config rewrite ──────────────────────────────────────────────
-//
-// Hyper is single-instance with one shared shell config (.hyper.js). To scope a
-// new window to a project/account we rewrite the file's shell/shellArgs, open
-// the window, then restore. The helpers below make that idempotent and the
-// restore race-free; the package mutex serializes overlapping launches so two
-// windows can't both spawn from whichever rewrite happened to land last.
-
-// hyperInjectMarker identifies a .hyper.js whose shellArgs we have already
-// rewritten (vs. the user's pristine config): our injected shellArgs always
-// sets this env var, so its presence means "modified by us, awaiting restore".
-const hyperInjectMarker = "CLAUDE_CODE_DISABLE_TERMINAL_TITLE"
-
-var (
-	// hyperMu serializes the read-modify-write-restore of the shared .hyper.js.
-	hyperMu sync.Mutex
-	// hyperGen counts config rewrites; a scheduled restore only fires when it's
-	// still the latest, so a newer launch's config isn't reverted underneath it.
-	hyperGen uint64
-
-	// Match the single uncommented shell:/shellArgs: lines. Comment lines start
-	// with `//`, so `^[ \t]*shell:` / `^[ \t]*shellArgs:` never match them. The
-	// shellArgs value stays on one line in both Hyper's default and our injected
-	// form, so `.` (no newline) spanning to the trailing `],` is correct even
-	// when the value embeds `]` (e.g. a "[main]" account tag).
-	//
-	// The shellArgs anchor allows an optional CR before the line end: Hyper writes
-	// .hyper.js with CRLF on Windows, and Go's (?m)$ matches before the \n (after
-	// the \r), so a bare `[ \t]*$` never matches a CRLF line — which silently
-	// skipped the shellArgs rewrite and launched a plain shell with no `claude`.
-	hyperShellRe = regexp.MustCompile(`(?m)^[ \t]*shell:[ \t]*'[^']*',`)
-	hyperArgsRe  = regexp.MustCompile(`(?m)^[ \t]*shellArgs:[ \t]*\[.*\],[ \t]*\r?$`)
-)
-
-// isInjectedHyperConfig reports whether .hyper.js already carries our injected
-// shellArgs, so its current shell/shellArgs are ours rather than the user's
-// pristine config.
-func isInjectedHyperConfig(content string) bool {
-	return strings.Contains(content, hyperInjectMarker)
-}
-
-// leadingWS returns the run of spaces/tabs at the start of s.
-func leadingWS(s string) string {
-	return s[:len(s)-len(strings.TrimLeft(s, " \t"))]
-}
-
-// rewriteHyperShell replaces whatever the current uncommented shell: and
-// shellArgs: lines are with shellLine / argsLine, preserving each line's
-// indentation. Unlike a placeholder-only replace it is idempotent: it rewrites
-// a pristine OR already-injected config, so a launch always reflects the chosen
-// project/account instead of silently no-opping on a config a previous launch
-// already modified (which froze every later launch onto that one
-// project/account). ReplaceAllStringFunc is used (not ReplaceAllString) so the
-// replacement is literal — argsLine contains `$env:`/`$host` which `$`-expansion
-// would otherwise mangle.
-func rewriteHyperShell(content, shellLine, argsLine string) string {
-	content = hyperShellRe.ReplaceAllStringFunc(content, func(m string) string {
-		return leadingWS(m) + shellLine
-	})
-	content = hyperArgsRe.ReplaceAllStringFunc(content, func(m string) string {
-		// Preserve a trailing CR so CRLF files keep consistent line endings (the
-		// match may include the \r via the \r? anchor).
-		cr := ""
-		if strings.HasSuffix(m, "\r") {
-			cr = "\r"
-		}
-		return leadingWS(m) + argsLine + cr
-	})
-	return content
-}
-
 // Launch resolves the entry to a command and starts it detached so the new
 // terminal outlives ClawdPanel. It never Wait()s. The child's working
 // directory is set when the configured dir exists, which also gives the `cmd`
 // preset its working directory without fragile cmd.exe quoting.
 func Launch(entry config.TerminalConfig, launcher config.LauncherConfig, opts LaunchOpts) error {
-	// Hyper shares one .hyper.js across all windows, so the rewrite→open→restore
-	// dance must run one launch fully at a time. Hold the lock for the whole
-	// Launch (it's released by the time the async restore below acquires it):
-	// without it, two overlapping launches would both write the shared config and
-	// both windows would spawn from whichever rewrite landed last.
-	if runtime.GOOS == "windows" && launcher.Preset == "hyper" {
-		hyperMu.Lock()
-		defer hyperMu.Unlock()
-	}
-
-	preExisting := GetPreExisting(launcher.Preset)
-
-	var hyperConfigRestore func()
-	if runtime.GOOS == "windows" && launcher.Preset == "hyper" {
-		configPath := filepath.Join(os.Getenv("APPDATA"), "Hyper", ".hyper.js")
-		backupPath := configPath + ".bak"
-
-		if contentBytes, err := os.ReadFile(configPath); err == nil {
-			content := string(contentBytes)
-
-			title := displayLabel(entry, opts)
-			dot := nearestDot(strings.TrimSpace(entry.Color))
-			if dot != "" && !strings.Contains(title, dot) {
-				title = dot + " " + title
-			}
-
-			cmdStr := strings.TrimSpace(entry.Command)
-			if cmdStr == "" {
-				cmdStr = "claude"
-			}
-
-			cfgDir := expandHome(strings.TrimSpace(opts.ConfigDir))
-
-			psCmd := `$env:CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1'; `
-			if cfgDir != "" {
-				escapedCfgDir := strings.ReplaceAll(cfgDir, `'`, `''`)
-				psCmd += fmt.Sprintf(`$env:CLAUDE_CONFIG_DIR = '%s'; `, escapedCfgDir)
-			}
-			// Hyper is single-instance: the new window's shell is spawned by
-			// the already-running primary process, so cmd.Dir below is ignored
-			// and the shell inherits Hyper's own cwd (the home dir). Since we
-			// fully own this PowerShell command, cd into the configured dir
-			// explicitly. Only when it exists, so a bad path doesn't abort the
-			// `claude` that follows.
-			if dir := resolveDir(entry.Dir); dir != "" {
-				if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-					escapedDir := strings.ReplaceAll(dir, `'`, `''`)
-					psCmd += fmt.Sprintf(`Set-Location -LiteralPath '%s'; `, escapedDir)
-				}
-			}
-			escapedTitle := strings.ReplaceAll(title, `'`, `''`)
-			psCmd += fmt.Sprintf(`$host.UI.RawUI.WindowTitle = '%s'; `, escapedTitle)
-			psCmd += cmdStr
-
-			// psCmd is embedded in a JS double-quoted string literal in
-			// .hyper.js, so escape backslashes FIRST then double-quotes.
-			// Without the backslash escaping, Hyper's JS parser collapses
-			// the Windows path "C:\Users\Admin\.claude-alt" to
-			// "C:UsersAdmin.claude-alt" (it drops the unknown \U \A \.
-			// escapes), so CLAUDE_CONFIG_DIR points nowhere and `claude`
-			// falls back to the default profile and prompts for login.
-			escapedPsCmd := strings.ReplaceAll(psCmd, `\`, `\\`)
-			escapedPsCmd = strings.ReplaceAll(escapedPsCmd, `"`, `\"`)
-			targetShell := "shell: 'powershell.exe',"
-			targetArgs := fmt.Sprintf(`shellArgs: ['-NoExit', '-Command', "%s"],`, escapedPsCmd)
-
-			// Snapshot the user's pristine config as the restore baseline ONLY
-			// when it isn't already our injected form. A prior launch may have
-			// left the file injected (its restore not yet fired, or a crash);
-			// re-snapshotting then would freeze our injected shellArgs in as the
-			// "pristine" baseline, and every later launch would restore to — and
-			// relaunch — that one project/account regardless of the chosen one.
-			// The existing .bak still holds the true pristine in that case.
-			if !isInjectedHyperConfig(content) {
-				_ = os.WriteFile(backupPath, contentBytes, 0644)
-			}
-
-			// Idempotent rewrite of the shell/shellArgs lines (see
-			// rewriteHyperShell): works whether the file is pristine or was left
-			// injected by a previous launch, so the chosen project/account always
-			// takes effect instead of silently no-opping.
-			content = rewriteHyperShell(content, targetShell, targetArgs)
-
-			if err := os.WriteFile(configPath, []byte(content), 0644); err == nil {
-				hyperGen++
-				myGen := hyperGen
-				// Non-locking: callers below already hold hyperMu (the synchronous
-				// error paths run under Launch's lock; the async restore acquires
-				// it before calling). Reverting only when this is still the latest
-				// rewrite keeps a newer launch's config from being clobbered.
-				hyperConfigRestore = func() {
-					if hyperGen != myGen {
-						return
-					}
-					if _, err := os.Stat(backupPath); err == nil {
-						_ = copyFile(backupPath, configPath)
-						_ = os.Remove(backupPath)
-					}
-				}
-				// When Hyper is already running (single-instance), the new
-				// window's shell is spawned by the primary process from its
-				// in-memory config, which it only refreshes when its file
-				// watcher notices this write. Launch too soon and the window
-				// opens with the previously-loaded shell/env — e.g. after an
-				// account switch it still carries the old account (or the
-				// restored default with no CLAUDE_CONFIG_DIR, falling back to
-				// ~/.claude). Give the watcher time to reload before we open
-				// the window. (Cold start doesn't need this — Hyper reads the
-				// config at launch — so only wait when it's already up.)
-				if len(preExisting) > 0 {
-					time.Sleep(1 * time.Second)
-				}
-			}
-		}
-	}
-
 	exe, args, err := build(entry, launcher, opts)
 	if err != nil {
-		if hyperConfigRestore != nil {
-			hyperConfigRestore()
-		}
 		return err
 	}
 	// Console apps (PowerShell, cmd) need a real console on launch — see
-	// wrapConsoleLaunch. GUI presets (Hyper, Windows Terminal) pass through.
+	// wrapConsoleLaunch. GUI presets (Windows Terminal, Hyperpanes) pass through.
 	console := false
 	if p, perr := resolvePreset(launcher.Preset); perr == nil {
 		console = p.Console
@@ -544,26 +351,8 @@ func Launch(entry config.TerminalConfig, launcher config.LauncherConfig, opts La
 	}
 	cmd.SysProcAttr = sysAttr
 	if err := cmd.Start(); err != nil {
-		if hyperConfigRestore != nil {
-			hyperConfigRestore()
-		}
 		return fmt.Errorf("launch %s: %w", exe, err)
 	}
-
-	if hyperConfigRestore != nil {
-		restore := hyperConfigRestore
-		go func() {
-			time.Sleep(4 * time.Second)
-			// Launch has long returned and released hyperMu; re-acquire it so the
-			// generation check and file revert can't race a concurrent launch.
-			hyperMu.Lock()
-			defer hyperMu.Unlock()
-			restore()
-		}()
-	}
-
-	title := displayLabel(entry, opts)
-	PostLaunch(launcher.Preset, entry, title, preExisting)
 
 	return cmd.Process.Release()
 }
@@ -697,10 +486,3 @@ func parseByte(s string) (int, bool) {
 	return v, false
 }
 
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0644)
-}
