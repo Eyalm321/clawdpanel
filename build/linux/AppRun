@@ -5,4 +5,4 @@
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="${HERE}/usr/bin:${PATH}"
 export GST_PLUGIN_PATH="${HERE}/usr/lib/gstreamer-1.0"
-exec "${HERE}/usr/bin/claudepanel" "$@"
+exec "${HERE}/usr/bin/clawdpanel" "$@"

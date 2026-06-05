@@ -153,7 +153,7 @@ func SetOpacity(hwnd uintptr, opacity float64) {
 }
 
 // IsFullScreenActive: stub on Linux. The mon argument matches the Windows
-// signature (which scopes detection to claudebar's display) but is unused here.
+// signature (which scopes detection to the bar's display) but is unused here.
 func IsFullScreenActive(MonitorInfo) bool { return false }
 
 // AutoHideSupported is false on Linux — the slide-up animation primitives

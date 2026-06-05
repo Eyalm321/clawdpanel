@@ -41,7 +41,7 @@ static dispatch_source_t trustTimer = nil;
 static int trustTimerTicks = 0;
 
 // Diagnostic log. Opened lazily on first PLOG call so the file shows up at
-// ~/Library/Application Support/ClaudePanel/pushdown.log without depending on
+// ~/Library/Application Support/ClawdPanel/pushdown.log without depending on
 // initPushdownIfNeeded ordering. Line-flushed after every write so a crash
 // preserves the last entry. This exists specifically to pinpoint AX-path
 // crashes on a host the developer can't run a debugger on; if the file gets
@@ -51,7 +51,7 @@ static dispatch_once_t pdLogOnce;
 
 static void pdLogOpen(void) {
     dispatch_once(&pdLogOnce, ^{
-        NSString* dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/ClaudePanel"];
+        NSString* dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/ClawdPanel"];
         [[NSFileManager defaultManager] createDirectoryAtPath:dir
                                   withIntermediateDirectories:YES
                                                    attributes:nil
@@ -88,7 +88,7 @@ static void pLog(const char* fmt, ...) {
     if ([NSThread isMainThread]) threadTag = 'M';
     else {
         const char* label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
-        if (label && strstr(label, "com.claudepanel.pushdown")) threadTag = 'P';
+        if (label && strstr(label, "com.clawdpanel.pushdown")) threadTag = 'P';
     }
 
     fprintf(pdLog, "%s.%03ld [%c] ", tbuf, ts.tv_nsec / 1000000, threadTag);
@@ -165,7 +165,7 @@ static void attachObserverToApp(pid_t pid, NSString* bundleID);
 
 static void initPushdownIfNeeded(void) {
     dispatch_once(&onceToken, ^{
-        pushdownQueue = dispatch_queue_create("com.claudepanel.pushdown", DISPATCH_QUEUE_SERIAL);
+        pushdownQueue = dispatch_queue_create("com.clawdpanel.pushdown", DISPATCH_QUEUE_SERIAL);
         observedApps = [NSMutableDictionary dictionary];
         activeTimers = [NSMutableDictionary dictionary];
         pendingWins = [NSMutableDictionary dictionary];

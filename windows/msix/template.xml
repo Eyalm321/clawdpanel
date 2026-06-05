@@ -8,15 +8,15 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="ClaudePanel"
+        Path="ClawdPanel"
         Arguments=""
-        InstallLocation="C:\Program Files\ClaudePanel\Claude Panel">
+        InstallLocation="C:\Program Files\ClawdPanel\Claude Panel">
     </Installer>
     <PackageInformation
         PackageName="Claude Panel"
         PackageDisplayName="Claude Panel"
-        PublisherName="CN=ClaudePanel"
-        PublisherDisplayName="ClaudePanel"
+        PublisherName="CN=ClawdPanel"
+        PublisherDisplayName="ClawdPanel"
         Version="0.1.0.0"
         PackageDescription="Claude Code Usage Panel">
         <Capabilities>
@@ -25,10 +25,10 @@
         </Capabilities>
         <Applications>
             <Application
-                Id="com.claudepanel.pkg"
+                Id="com.clawdpanel.pkg"
                 Description="Claude Code Usage Panel"
                 DisplayName="Claude Panel"
-                ExecutableName="ClaudePanel"
+                ExecutableName="ClawdPanel"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -42,12 +42,12 @@
         <Properties>
             <Framework>false</Framework>
             <DisplayName>Claude Panel</DisplayName>
-            <PublisherDisplayName>ClaudePanel</PublisherDisplayName>
+            <PublisherDisplayName>ClawdPanel</PublisherDisplayName>
             <Description>Claude Code Usage Panel</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="claudepanel.msix" />
+    <SaveLocation PackagePath="clawdpanel.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

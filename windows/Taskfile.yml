@@ -6,7 +6,7 @@ includes:
 vars:
   WAILS3: '{{.WAILS3 | default "wails3"}}'
   ROOT_DIR: '{{.TASKFILE_DIR}}/..'
-  APP_NAME: '{{.APP_NAME | default "ClaudePanel"}}'
+  APP_NAME: '{{.APP_NAME | default "ClawdPanel"}}'
   BIN_DIR: '{{.BIN_DIR | default "bin"}}'
   # Signing configuration - edit these values for your project
   # SIGN_CERTIFICATE: "path/to/certificate.pfx"

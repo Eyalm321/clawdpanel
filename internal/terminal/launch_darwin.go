@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 // builtinPresets for macOS, ordered by detection preference: Ghostty, iTerm2,

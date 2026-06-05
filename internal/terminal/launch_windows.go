@@ -11,7 +11,7 @@ import (
 	"time"
 	"unsafe"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 var (
@@ -193,7 +193,7 @@ func detachAttrs() *syscall.SysProcAttr {
 }
 
 // wrapConsoleLaunch adapts the launch for console apps (PowerShell, cmd). The
-// problem: ClaudePanel is a GUI process with no console, so when Go spawns a
+// problem: ClawdPanel is a GUI process with no console, so when Go spawns a
 // console child it wires the child's stdin to NUL (Go always sets
 // STARTF_USESTDHANDLES). An interactive shell — `powershell -NoExit`, `cmd /k` —
 // runs its command, then its prompt reads that NUL stdin, hits EOF, and exits

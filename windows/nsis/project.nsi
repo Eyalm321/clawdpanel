@@ -19,8 +19,8 @@ Unicode true
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "claudepanel"
-## !define INFO_COMPANYNAME    "My Company" # Default "ClaudePanel"
+## !define INFO_PROJECTNAME    "my-project" # Default "clawdpanel"
+## !define INFO_COMPANYNAME    "My Company" # Default "ClawdPanel"
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "Claude Panel"
 ## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© now, My Company"

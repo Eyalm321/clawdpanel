@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"claudepanel/internal/platform"
+	"clawdpanel/internal/platform"
 )
 
 // WindowOps is the narrow set of OS window operations the reveal machine needs.

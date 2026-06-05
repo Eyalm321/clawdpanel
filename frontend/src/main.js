@@ -6,7 +6,7 @@ import {
   RadioPlayStation, RadioPause, RadioSetVolume, RadioSetShuffle, SetActiveStation,
   RadioNext, RadioPrev, RadioStationHasTracks, RadioSeek,
   OpenTerminal, OpenTerminalPrompt, ToggleBrandMenu
-} from '../bindings/claudepanel/app.js';
+} from '../bindings/clawdpanel/app.js';
 import { Events } from '@wailsio/runtime';
 
 const BAR_CHARS = 9;
@@ -316,7 +316,7 @@ function applyTheme(idx) {
   const themeName = THEMES[idx];
   bar.classList.add(`theme-${themeName.toLowerCase()}`);
   document.getElementById('val-theme').textContent = themeName;
-  localStorage.setItem('claudepanel-theme', themeName);
+  localStorage.setItem('clawdpanel-theme', themeName);
 }
 
 function cycleTheme(dir) {
@@ -330,7 +330,7 @@ document.getElementById('btn-theme-next').addEventListener('click', () => cycleT
 document.getElementById('val-theme').addEventListener('click', () => cycleTheme(+1));
 
 function initTheme() {
-  const savedTheme = localStorage.getItem('claudepanel-theme') || 'CLAUDE';
+  const savedTheme = localStorage.getItem('clawdpanel-theme') || 'CLAUDE';
   let idx = THEMES.indexOf(savedTheme);
   if (idx === -1) idx = 0;
   activeThemeIdx = idx;
@@ -358,7 +358,7 @@ async function togglePin() {
 document.getElementById('seg-pin').addEventListener('click', togglePin);
 
 // ── Brand menu ────────────────────────────────────────────────────────────────
-// Clicking the ClaudePanel logo toggles a small dropdown window (Check for
+// Clicking the ClawdPanel logo toggles a small dropdown window (Check for
 // updates / Exit) anchored beneath the icon. The window is created and positioned
 // by Go and auto-hides when it loses focus; the bar only triggers the toggle.
 document.getElementById('seg-brand').addEventListener('click', async () => {
@@ -425,7 +425,7 @@ function updateVolumeUI() {
 
 async function setVolume(vol) {
   currentVolume = Math.min(200, Math.max(0, vol));
-  localStorage.setItem('claudepanel-fm-volume', currentVolume);
+  localStorage.setItem('clawdpanel-fm-volume', currentVolume);
   updateVolumeUI();
   try {
     await RadioSetVolume(currentVolume / 100.0);

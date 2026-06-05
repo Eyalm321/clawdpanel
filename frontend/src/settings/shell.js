@@ -1,6 +1,6 @@
 // Reusable settings-popup shell.
 //
-// Renders the ClaudePanel chrome (invader logo + title + close button) around a
+// Renders the ClawdPanel chrome (invader logo + title + close button) around a
 // feature-agnostic body, applies the active theme, and mounts exactly one
 // registered "panel" at a time. Adding a new editable feature is just writing
 // another panel module (see panel-*.js) and registering it in settings.js — the
@@ -17,7 +17,7 @@ const THEMES = ['CLAUDE', 'FALLOUT', 'AMBER', 'MATRIX', 'DRACULA'];
 export function applyTheme() {
   const root = document.getElementById('settings-root');
   if (!root) return;
-  const saved = localStorage.getItem('claudepanel-theme') || 'CLAUDE';
+  const saved = localStorage.getItem('clawdpanel-theme') || 'CLAUDE';
   const name = THEMES.includes(saved) ? saved : 'CLAUDE';
   THEMES.forEach((t) => root.classList.remove(`theme-${t.toLowerCase()}`));
   root.classList.add(`theme-${name.toLowerCase()}`);

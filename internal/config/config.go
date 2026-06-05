@@ -104,21 +104,21 @@ func AppDataDir() string {
 	switch runtime.GOOS {
 	case "windows":
 		if v := os.Getenv("APPDATA"); v != "" {
-			return filepath.Join(v, "ClaudePanel")
+			return filepath.Join(v, "ClawdPanel")
 		}
 	case "darwin":
 		if h, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(h, "Library", "Application Support", "ClaudePanel")
+			return filepath.Join(h, "Library", "Application Support", "ClawdPanel")
 		}
 	default:
 		if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-			return filepath.Join(v, "ClaudePanel")
+			return filepath.Join(v, "ClawdPanel")
 		}
 		if h, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(h, ".config", "ClaudePanel")
+			return filepath.Join(h, ".config", "ClawdPanel")
 		}
 	}
-	return filepath.Join(os.TempDir(), "ClaudePanel")
+	return filepath.Join(os.TempDir(), "ClawdPanel")
 }
 
 func configPath() string {

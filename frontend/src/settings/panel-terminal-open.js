@@ -4,7 +4,7 @@
 // (or Enter) launches the terminal scoped to that account with the sublabel
 // appended to the tab title, then closes the popup. Both are per-launch only —
 // nothing is written to config. nav:false so it has no sidebar entry.
-import { GetConfig, OpenTerminalAs } from '../../bindings/claudepanel/app.js';
+import { GetConfig, OpenTerminalAs } from '../../bindings/clawdpanel/app.js';
 import { Window } from '@wailsio/runtime';
 
 function escapeHtml(s) {

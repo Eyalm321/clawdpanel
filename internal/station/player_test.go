@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"claudepanel/internal/audio"
-	"claudepanel/internal/config"
+	"clawdpanel/internal/audio"
+	"clawdpanel/internal/config"
 )
 
 type fakeController struct {

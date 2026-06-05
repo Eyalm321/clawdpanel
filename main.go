@@ -23,7 +23,7 @@ func main() {
 		// running instance (which re-reveals the bar) and exits immediately, so
 		// we never end up with two bars / two tray icons.
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.claudepanel.app",
+			UniqueID: "com.clawdpanel.app",
 			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
 				app.reveal()
 			},

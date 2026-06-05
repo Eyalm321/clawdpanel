@@ -2,7 +2,7 @@
 // (main.js), re-laid-out vertically with room to breathe. Data round-trips the
 // whole config via GetConfig/SaveConfig; SaveConfig emits "config:changed" which
 // refreshes the bar.
-import { GetConfig, SaveConfig } from '../../bindings/claudepanel/app.js';
+import { GetConfig, SaveConfig } from '../../bindings/clawdpanel/app.js';
 
 export default {
   id: 'accounts',

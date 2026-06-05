@@ -107,7 +107,7 @@ func startFullscreenWatcher() {
 // Space change; the very first call lazily starts the observer. Cheap to
 // call frequently — just an atomic int read after init.
 //
-// The mon argument (claudebar's monitor) is accepted for parity with the
+// The mon argument (the bar's monitor) is accepted for parity with the
 // Windows implementation, which scopes detection to a single display, but is
 // ignored here: macOS fullscreen is a per-Space concept the observer already
 // tracks globally, not a per-display bounds check.

@@ -3,7 +3,7 @@ version: '3'
 vars:
   WAILS3: '{{.WAILS3 | default "wails3"}}'
   PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
-  APP_NAME: '{{.APP_NAME | default "ClaudePanel"}}'
+  APP_NAME: '{{.APP_NAME | default "ClawdPanel"}}'
   BIN_DIR: '{{.BIN_DIR | default "bin"}}'
 
 env:

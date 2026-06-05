@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"claudepanel/internal/config"
+	"clawdpanel/internal/config"
 )
 
 // videoRefRe captures the 11-char video ID from any common YouTube URL form,

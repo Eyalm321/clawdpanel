@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"claudepanel/internal/platform"
+	"clawdpanel/internal/platform"
 )
 
 // ── test doubles ────────────────────────────────────────────────────────────

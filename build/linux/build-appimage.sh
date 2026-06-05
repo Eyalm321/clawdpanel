@@ -1,30 +1,30 @@
 #!/bin/sh
 # build-appimage.sh — stages an AppDir from the Wails-built Linux binary and
-# invokes appimagetool to produce ClaudePanel-x86_64.AppImage in ./dist.
+# invokes appimagetool to produce ClawdPanel-x86_64.AppImage in ./dist.
 #
 # Assumes:
-#   * build/bin/claudepanel exists (run `wails build -platform linux/amd64` first)
+#   * build/bin/clawdpanel exists (run `wails build -platform linux/amd64` first)
 #   * appimagetool is on $PATH (download from https://github.com/AppImage/AppImageKit/releases)
 
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
-APPDIR="$OUT_DIR/ClaudePanel.AppDir"
+APPDIR="$OUT_DIR/ClawdPanel.AppDir"
 
 mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/share/applications"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
-cp "$ROOT/bin/claudepanel" "$APPDIR/usr/bin/claudepanel"
-chmod +x "$APPDIR/usr/bin/claudepanel"
+cp "$ROOT/bin/clawdpanel" "$APPDIR/usr/bin/clawdpanel"
+chmod +x "$APPDIR/usr/bin/clawdpanel"
 
-cp "$ROOT/build/linux/claudepanel.desktop" "$APPDIR/usr/share/applications/claudepanel.desktop"
-cp "$ROOT/build/linux/claudepanel.desktop" "$APPDIR/claudepanel.desktop"
+cp "$ROOT/build/linux/clawdpanel.desktop" "$APPDIR/usr/share/applications/clawdpanel.desktop"
+cp "$ROOT/build/linux/clawdpanel.desktop" "$APPDIR/clawdpanel.desktop"
 
-cp "$ROOT/build/linux/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/claudepanel.png"
-cp "$ROOT/build/linux/icon.png" "$APPDIR/claudepanel.png"
-ln -sf claudepanel.png "$APPDIR/.DirIcon"
+cp "$ROOT/build/linux/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/clawdpanel.png"
+cp "$ROOT/build/linux/icon.png" "$APPDIR/clawdpanel.png"
+ln -sf clawdpanel.png "$APPDIR/.DirIcon"
 
 # Bundle GStreamer plugins
 mkdir -p "$APPDIR/usr/lib/gstreamer-1.0"
@@ -36,7 +36,7 @@ fi
 cp "$ROOT/build/linux/AppRun" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 
-ARCH=x86_64 appimagetool "$APPDIR" "$OUT_DIR/ClaudePanel-x86_64.AppImage"
+ARCH=x86_64 appimagetool "$APPDIR" "$OUT_DIR/ClawdPanel-x86_64.AppImage"
 
 # Remove the staging tree so OUT_DIR only contains the AppImage. Without
 # this the AppDir and all its bundled GStreamer plugins / AppRun / icon /
@@ -45,4 +45,4 @@ ARCH=x86_64 appimagetool "$APPDIR" "$OUT_DIR/ClaudePanel-x86_64.AppImage"
 # release assets ("junk" alongside the real installers).
 rm -rf "$APPDIR"
 
-echo "Built $OUT_DIR/ClaudePanel-x86_64.AppImage"
+echo "Built $OUT_DIR/ClawdPanel-x86_64.AppImage"

@@ -8,14 +8,14 @@
   IgnorableNamespaces="uap3">
   
   <Identity 
-    Name="com.claudepanel.pkg"
-    Publisher="CN=ClaudePanel"
+    Name="com.clawdpanel.pkg"
+    Publisher="CN=ClawdPanel"
     Version="0.1.0.0" 
     ProcessorArchitecture="x64" />
   
   <Properties>
     <DisplayName>Claude Panel</DisplayName>
-    <PublisherDisplayName>ClaudePanel</PublisherDisplayName>
+    <PublisherDisplayName>ClawdPanel</PublisherDisplayName>
     <Description>Claude Code Usage Panel</Description>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -29,7 +29,7 @@
   </Resources>
   
   <Applications>
-    <Application Id="com.claudepanel.pkg" Executable="ClaudePanel" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="com.clawdpanel.pkg" Executable="ClawdPanel" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Claude Panel"
         Description="Claude Code Usage Panel"
@@ -41,7 +41,7 @@
       </uap:VisualElements>
       
       <Extensions>
-        <desktop:Extension Category="windows.fullTrustProcess" Executable="ClaudePanel" />
+        <desktop:Extension Category="windows.fullTrustProcess" Executable="ClawdPanel" />
         
         
       </Extensions>
