@@ -12,7 +12,8 @@ export default {
     let config = await GetConfig();
     const presets = await ListTerminalPresets();
     config.launcher = config.launcher || { preset: '', exe: '', args: [] };
-    if (!config.launcher.preset) {
+    const validKeys = new Set(presets.map(p => p.key));
+    if (!config.launcher.preset || (!validKeys.has(config.launcher.preset) && config.launcher.preset !== 'custom')) {
       try { config.launcher = await DetectTerminal(); } catch (e) { /* keep empty */ }
     }
     let formMode = 'edit';
