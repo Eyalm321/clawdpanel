@@ -17,7 +17,7 @@ func main() {
 	app := NewApp()
 
 	wailsApp := application.New(application.Options{
-		Name:        "Claude Panel",
+		Name:        "Clawd Panel",
 		Description: "Claude Code Usage Panel",
 		// Single-instance: a second launch fails to take the lock, pings the
 		// running instance (which re-reveals the bar) and exits immediately, so

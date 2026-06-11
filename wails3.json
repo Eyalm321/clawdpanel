@@ -7,12 +7,12 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "Claude Panel",
+    "name": "Clawd Panel",
     "email": "noreply@example.com"
   },
   "info": {
     "companyName": "ClawdPanel",
-    "productName": "Claude Panel",
+    "productName": "Clawd Panel",
     "productVersion": "1.0.0",
     "copyright": "2026",
     "fileDescription": "Claude Code Usage Panel"
