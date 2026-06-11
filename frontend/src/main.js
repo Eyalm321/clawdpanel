@@ -5,7 +5,7 @@ import {
   SaveConfig, SetPinned,
   RadioPlayStation, RadioPause, RadioSetVolume, RadioSetShuffle, SetActiveStation,
   RadioNext, RadioPrev, RadioStationHasTracks, RadioSeek,
-  OpenTerminal, OpenTerminalPrompt, ToggleBrandMenu
+  ToggleBrandMenu
 } from '../bindings/clawdpanel/app.js';
 import { Events } from '@wailsio/runtime';
 
@@ -57,10 +57,9 @@ function normalizeBarSeparators() {
 }
 
 // applyFeatureVisibility shows/hides the optional bar segments per cfg.features
-// (a missing flag counts as enabled). The terminal segment is owned by
-// applyTermSegment and the 5-hour block by refresh (it also needs live data),
-// so this handles radio / monitor / theme / weekly. Ends by normalizing the
-// separators around whatever changed.
+// (a missing flag counts as enabled). The 5-hour block is owned by refresh (it
+// also needs live data), so this handles radio / monitor / theme / weekly. Ends
+// by normalizing the separators around whatever changed.
 function applyFeatureVisibility() {
   const f = (cfg && cfg.features) || {};
   const setDisp = (id, on) => {
@@ -224,7 +223,6 @@ async function init() {
       document.getElementById('btn-mon-next').style.display = '';
     }
 
-    applyTermSegment();
     applyFeatureVisibility();
 
     // Radio stations (config-driven) + persisted selection/volume.
@@ -759,98 +757,9 @@ radioSeg.addEventListener('mouseenter', cancelTimelineHide);
 updateVolumeUI();
 setRadioStatus('off');
 
-// Account, terminal and station editing now live in a separate popup window
+// Account and station editing now live in a separate popup window
 // (settings.html / src/settings/*), opened from the tray "Configure…" items.
 // The bar only keeps its cyclers below.
-
-// ── Terminal launcher cycler ─────────────────────────────────────────────────
-// ◀ ● NAME ▶ — clicking the name (or dot) opens a new, labeled terminal running
-// `claude` in the entry's directory. Mirrors cycleMon/cycleTheme. The segment is
-// hidden entirely when no launchers are configured (like the account arrows when
-// fewer than two accounts).
-let activeTermIdx = 0;
-// While a terminal is being launched the button shows "LAUNCHING <NAME>" for a
-// brief moment as click feedback (the terminal itself opens detached).
-let isLaunching = false;
-
-function applyTermSegment() {
-  const seg = document.getElementById('seg-term');
-  const terms = (cfg && cfg.terminals) || [];
-  const enabled = !cfg || !cfg.features || cfg.features.terminals !== false;
-  // Hidden when the feature is off OR there's nothing to launch. The adjacent
-  // separator (#sep-term) is owned by normalizeBarSeparators, not here.
-  if (terms.length === 0 || !enabled) {
-    if (seg) seg.style.display = 'none';
-    normalizeBarSeparators();
-    return;
-  }
-  if (seg) seg.style.display = '';
-  if (activeTermIdx >= terms.length) activeTermIdx = 0;
-
-  const t = terms[activeTermIdx];
-  const name = (t.name || '---').toUpperCase();
-  document.getElementById('val-term').textContent = isLaunching ? `LAUNCHING ${name}` : `LAUNCH ${name}`;
-  const dot = document.getElementById('dot-term');
-  if (t.color) {
-    dot.style.background = t.color; // exact configured hex, inline (beats theme CSS)
-    dot.style.display = 'inline-block';
-  } else {
-    dot.style.display = 'none';
-  }
-
-  // Hide the arrows when there's only one entry to cycle through.
-  const showArrows = terms.length >= 2 ? '' : 'none';
-  document.getElementById('btn-term-prev').style.display = showArrows;
-  document.getElementById('btn-term-next').style.display = showArrows;
-
-  normalizeBarSeparators();
-}
-
-function cycleTerm(dir) {
-  const terms = (cfg && cfg.terminals) || [];
-  if (terms.length < 2) return;
-  activeTermIdx = (activeTermIdx + dir + terms.length) % terms.length;
-  applyTermSegment();
-}
-
-// Re-read config and re-render the segment after any config change (editor save).
-async function refreshTerminals() {
-  try {
-    cfg = await GetConfig();
-    applyTermSegment();
-  } catch (e) { /* ignore */ }
-}
-
-let lastTermOpen = 0;
-async function openTerm(e) {
-  const terms = (cfg && cfg.terminals) || [];
-  if (terms.length === 0) return;
-  // Shift-click: prompt for a per-launch sublabel in the popup rather than
-  // opening immediately. Plain click stays an instant one-click open.
-  if (e && e.shiftKey) {
-    try { await OpenTerminalPrompt(activeTermIdx); }
-    catch (err) { console.error('terminal prompt failed:', err); }
-    return;
-  }
-  // ~400ms debounce so a fast double-click can't spawn two windows.
-  const now = Date.now();
-  if (now - lastTermOpen < 400) return;
-  lastTermOpen = now;
-  isLaunching = true;
-  applyTermSegment();
-  try {
-    await OpenTerminal(activeTermIdx, '');
-  } catch (err) {
-    alert('Could not open terminal: ' + err);
-  }
-  isLaunching = false;
-  applyTermSegment();
-}
-
-document.getElementById('btn-term-prev').addEventListener('click', () => cycleTerm(-1));
-document.getElementById('btn-term-next').addEventListener('click', () => cycleTerm(+1));
-document.getElementById('val-term').addEventListener('click', openTerm);
-document.getElementById('dot-term').addEventListener('click', openTerm);
 
 // ── Radio stations: bar cycler refresh ───────────────────────────────────────
 // Editing stations now lives in the settings popup; the bar only re-reads the
@@ -864,13 +773,12 @@ async function refreshStations() {
   } catch (e) { /* ignore */ }
 }
 
-// Single config-change handler. Order matters: refreshTerminals/refreshStations
-// re-read cfg, then applyFeatureVisibility + refresh render against that fresh
-// copy (refresh's 5H gate reads cfg.features, so it must run last).
+// Single config-change handler. Order matters: refreshStations re-reads cfg,
+// then applyFeatureVisibility + refresh render against that fresh copy
+// (refresh's 5H gate reads cfg.features, so it must run last).
 async function onConfigChanged() {
-  await refreshTerminals();
-  applyFeatureVisibility();
   await refreshStations();
+  applyFeatureVisibility();
   await refresh();
 }
 

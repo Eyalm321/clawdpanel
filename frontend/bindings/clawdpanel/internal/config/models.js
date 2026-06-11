@@ -4,7 +4,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Create as $Create } from "/wails/runtime.js";
+import { Create as $Create } from "@wailsio/runtime";
 
 export class AccountConfig {
     /**
@@ -133,20 +133,6 @@ export class Config {
              */
             this["pinned"] = false;
         }
-        if (!("terminals" in $$source)) {
-            /**
-             * @member
-             * @type {TerminalConfig[]}
-             */
-            this["terminals"] = [];
-        }
-        if (!("launcher" in $$source)) {
-            /**
-             * @member
-             * @type {LauncherConfig}
-             */
-            this["launcher"] = (new LauncherConfig());
-        }
         if (!("stations" in $$source)) {
             /**
              * @member
@@ -190,9 +176,7 @@ export class Config {
         const $$createField6_0 = $$createType1;
         const $$createField7_0 = $$createType2;
         const $$createField12_0 = $$createType4;
-        const $$createField13_0 = $$createType5;
-        const $$createField14_0 = $$createType7;
-        const $$createField17_0 = $$createType8;
+        const $$createField15_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("accounts" in $$parsedSource) {
             $$parsedSource["accounts"] = $$createField6_0($$parsedSource["accounts"]);
@@ -200,17 +184,11 @@ export class Config {
         if ("hotkeys" in $$parsedSource) {
             $$parsedSource["hotkeys"] = $$createField7_0($$parsedSource["hotkeys"]);
         }
-        if ("terminals" in $$parsedSource) {
-            $$parsedSource["terminals"] = $$createField12_0($$parsedSource["terminals"]);
-        }
-        if ("launcher" in $$parsedSource) {
-            $$parsedSource["launcher"] = $$createField13_0($$parsedSource["launcher"]);
-        }
         if ("stations" in $$parsedSource) {
-            $$parsedSource["stations"] = $$createField14_0($$parsedSource["stations"]);
+            $$parsedSource["stations"] = $$createField12_0($$parsedSource["stations"]);
         }
         if ("features" in $$parsedSource) {
-            $$parsedSource["features"] = $$createField17_0($$parsedSource["features"]);
+            $$parsedSource["features"] = $$createField15_0($$parsedSource["features"]);
         }
         return new Config(/** @type {Partial<Config>} */($$parsedSource));
     }
@@ -238,14 +216,6 @@ export class FeatureConfig {
              * @type {boolean}
              */
             this["radio"] = false;
-        }
-        if (!("terminals" in $$source)) {
-            /**
-             * #seg-term ("LAUNCH")
-             * @member
-             * @type {boolean}
-             */
-            this["terminals"] = false;
         }
         if (!("monitor" in $$source)) {
             /**
@@ -330,60 +300,6 @@ export class HotkeyConfig {
 }
 
 /**
- * LauncherConfig is the single, global choice of terminal program used to open
- * every launcher entry. Preset == "" means "not yet resolved" — OpenTerminal
- * detects a sensible default lazily on first use and persists it here.
- */
-export class LauncherConfig {
-    /**
-     * Creates a new LauncherConfig instance.
-     * @param {Partial<LauncherConfig>} [$$source = {}] - The source object to create the LauncherConfig.
-     */
-    constructor($$source = {}) {
-        if (!("preset" in $$source)) {
-            /**
-             * "windows-terminal", …, "custom"; "" = detect lazily
-             * @member
-             * @type {string}
-             */
-            this["preset"] = "";
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * override (custom / edited builtin)
-             * @member
-             * @type {string | undefined}
-             */
-            this["exe"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * override template
-             * @member
-             * @type {string[] | undefined}
-             */
-            this["args"] = undefined;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new LauncherConfig instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {LauncherConfig}
-     */
-    static createFrom($$source = {}) {
-        const $$createField2_0 = $$createType9;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("args" in $$parsedSource) {
-            $$parsedSource["args"] = $$createField2_0($$parsedSource["args"]);
-        }
-        return new LauncherConfig(/** @type {Partial<LauncherConfig>} */($$parsedSource));
-    }
-}
-
-/**
  * StationConfig is a named, ordered collection of YouTube items played as a
  * radio station, with a per-station shuffle toggle. Shuffle is driven from the
  * bar's shuffle button (not the settings editor) and persisted here so the
@@ -426,7 +342,7 @@ export class StationConfig {
      * @returns {StationConfig}
      */
     static createFrom($$source = {}) {
-        const $$createField1_0 = $$createType11;
+        const $$createField1_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField1_0($$parsedSource["items"]);
@@ -500,71 +416,12 @@ export const StationItemKind = {
     ItemLivestream: "livestream",
 };
 
-/**
- * TerminalConfig is one launcher entry shown in the bar's terminal cycler.
- */
-export class TerminalConfig {
-    /**
-     * Creates a new TerminalConfig instance.
-     * @param {Partial<TerminalConfig>} [$$source = {}] - The source object to create the TerminalConfig.
-     */
-    constructor($$source = {}) {
-        if (!("name" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["name"] = "";
-        }
-        if (!("color" in $$source)) {
-            /**
-             * "#RRGGBB"; "" = none
-             * @member
-             * @type {string}
-             */
-            this["color"] = "";
-        }
-        if (!("dir" in $$source)) {
-            /**
-             * "~" allowed
-             * @member
-             * @type {string}
-             */
-            this["dir"] = "";
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * default "claude"
-             * @member
-             * @type {string | undefined}
-             */
-            this["command"] = undefined;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new TerminalConfig instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {TerminalConfig}
-     */
-    static createFrom($$source = {}) {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new TerminalConfig(/** @type {Partial<TerminalConfig>} */($$parsedSource));
-    }
-}
-
 // Private type creation functions
 const $$createType0 = AccountConfig.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = HotkeyConfig.createFrom;
-const $$createType3 = TerminalConfig.createFrom;
+const $$createType3 = StationConfig.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = LauncherConfig.createFrom;
-const $$createType6 = StationConfig.createFrom;
+const $$createType5 = FeatureConfig.createFrom;
+const $$createType6 = StationItem.createFrom;
 const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = FeatureConfig.createFrom;
-const $$createType9 = $Create.Array($Create.Any);
-const $$createType10 = StationItem.createFrom;
-const $$createType11 = $Create.Array($$createType10);

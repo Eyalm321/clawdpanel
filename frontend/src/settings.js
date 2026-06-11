@@ -8,23 +8,18 @@ import './style.css';
 import { Events } from '@wailsio/runtime';
 import { createShell, applyTheme } from './settings/shell.js';
 import accounts from './settings/panel-accounts.js';
-import terminals from './settings/panel-terminals.js';
 import stations from './settings/panel-stations.js';
 import options from './settings/panel-options.js';
-import terminalOpen from './settings/panel-terminal-open.js';
 
-// Insertion order drives the sidebar nav order; terminalOpen is nav:false so it
-// never appears as a sidebar entry (it's the Shift-click launch dialog).
+// Insertion order drives the sidebar nav order.
 const PANELS = {
   [accounts.id]: accounts,
-  [terminals.id]: terminals,
   [stations.id]: stations,
   [options.id]: options,
-  [terminalOpen.id]: terminalOpen,
 };
 
 // A "show" request carries the panel id plus optional context (index/name) used
-// by context-specific panels like terminal-open.
+// by context-specific panels.
 function payloadFromURL() {
   const u = new URLSearchParams(location.search);
   const panel = u.get('panel');

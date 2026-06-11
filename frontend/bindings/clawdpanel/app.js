@@ -4,7 +4,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "/wails/runtime.js";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -15,9 +15,6 @@ import * as config$0 from "./internal/config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as platform$0 from "./internal/platform/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as terminal$0 from "./internal/terminal/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -45,22 +42,11 @@ export function CloseBrandMenu() {
 }
 
 /**
- * DetectTerminal returns the auto-detected launcher for this machine without
- * persisting it — used by the editor to preselect a sensible default.
- * @returns {$CancellablePromise<config$0.LauncherConfig>}
- */
-export function DetectTerminal() {
-    return $Call.ByID(3295777970).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
  * @returns {$CancellablePromise<claude$0.BarData | null>}
  */
 export function GetBarData() {
     return $Call.ByID(1002198872).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType2($result);
     }));
 }
 
@@ -69,7 +55,7 @@ export function GetBarData() {
  */
 export function GetConfig() {
     return $Call.ByID(1200034045).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType4($result);
+        return $$createType3($result);
     }));
 }
 
@@ -87,7 +73,7 @@ export function GetLastUpdateResult() {
  */
 export function GetMonitors() {
     return $Call.ByID(3692271108).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType5($result);
     }));
 }
 
@@ -97,7 +83,7 @@ export function GetMonitors() {
  */
 export function GetPushdownStats() {
     return $Call.ByID(2130621354).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType6($result);
     }));
 }
 
@@ -117,66 +103,13 @@ export function InstallUpdate(downloadURL) {
 }
 
 /**
- * ListTerminalPresets returns the builtin terminal programs for this OS plus
- * the custom escape hatch, for the bar editor's dropdown.
- * @returns {$CancellablePromise<terminal$0.PresetInfo[]>}
- */
-export function ListTerminalPresets() {
-    return $Call.ByID(3249389343).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
-    }));
-}
-
-/**
  * OpenSettings opens the unified settings window (on the Accounts section). The
- * window's left-sidebar nav lets the user move to Terminals / Stations / Bar
- * Options from there — replacing the old per-feature tray items.
+ * window's left-sidebar nav lets the user move to Stations / Bar Options from
+ * there — replacing the old per-feature tray items.
  * @returns {$CancellablePromise<void>}
  */
 export function OpenSettings() {
     return $Call.ByID(2024983644);
-}
-
-/**
- * OpenTerminal launches the configured launcher entry at index in a new,
- * visible terminal window, scoped to the currently-shown account. It's the
- * plain-click path; OpenTerminalAs is the general form.
- * @param {number} index
- * @param {string} sublabel
- * @returns {$CancellablePromise<void>}
- */
-export function OpenTerminal(index, sublabel) {
-    return $Call.ByID(2247958725, index, sublabel);
-}
-
-/**
- * OpenTerminalAs launches the launcher entry at index scoped to accountIndex's
- * account (its name tags the title and its config dir becomes CLAUDE_CONFIG_DIR
- * for the launched `claude`). It's the Shift-click path, where the popup lets
- * the user pick an account other than the active one. accountIndex out of range
- * launches unscoped. The launcher program is resolved lazily on first use (no
- * terminal detection happens in config.Defaults) and persisted. sublabel is an
- * optional per-launch suffix appended to the tab title ("CRM · backend") so
- * several terminals from one entry can be told apart; "" for a plain open.
- * @param {number} index
- * @param {number} accountIndex
- * @param {string} sublabel
- * @returns {$CancellablePromise<void>}
- */
-export function OpenTerminalAs(index, accountIndex, sublabel) {
-    return $Call.ByID(1650010541, index, accountIndex, sublabel);
-}
-
-/**
- * OpenTerminalPrompt opens the settings popup on the "terminal-open" panel — an
- * account picker + sublabel textbox for entry index. It's the Shift-click path
- * from the bar; the panel then calls OpenTerminalAs(index, account, sublabel).
- * Plain click skips this and opens directly.
- * @param {number} index
- * @returns {$CancellablePromise<void>}
- */
-export function OpenTerminalPrompt(index) {
-    return $Call.ByID(2877315675, index);
 }
 
 /**
@@ -194,18 +127,8 @@ export function OpenUpdateWindow() {
  */
 export function ParseStationItem(input) {
     return $Call.ByID(1591082711, input).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType7($result);
     }));
-}
-
-/**
- * PickDirectory opens a native folder-picker and returns the chosen absolute
- * path, or "" if the user cancelled. The terminal editor uses this for the DIR
- * field — a browser file input can't yield a real OS path in WebView2.
- * @returns {$CancellablePromise<string>}
- */
-export function PickDirectory() {
-    return $Call.ByID(1347829059);
 }
 
 /**
@@ -396,13 +319,10 @@ export function ToggleStartup() {
 
 // Private type creation functions
 const $$createType0 = $models.UpdateCheckResult.createFrom;
-const $$createType1 = config$0.LauncherConfig.createFrom;
-const $$createType2 = claude$0.BarData.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = config$0.Config.createFrom;
-const $$createType5 = platform$0.MonitorInfo.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = platform$0.PushdownStats.createFrom;
-const $$createType8 = terminal$0.PresetInfo.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = config$0.StationItem.createFrom;
+const $$createType1 = claude$0.BarData.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = config$0.Config.createFrom;
+const $$createType4 = platform$0.MonitorInfo.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = platform$0.PushdownStats.createFrom;
+const $$createType7 = config$0.StationItem.createFrom;

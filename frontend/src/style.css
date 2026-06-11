@@ -601,20 +601,6 @@ html, body {
 #btn-radio-shuffle.on { color: var(--text); }
 #btn-radio-shuffle:hover { color: var(--text); }
 
-/* ── Terminal launcher cycler ── */
-/* The dot shows the entry's exact configured hex (set via inline style on the
-   element) so it reads correctly on all five themes regardless of accent. */
-.dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: inline-block;
-}
-#seg-term .val,
-#seg-term .dot { cursor: pointer; }
-#seg-term .val:hover { color: var(--text); }
-
 /* ── Accounts Editor UI Styles ── */
 .editor-select {
   background: var(--bg);
@@ -681,15 +667,6 @@ html, body {
   background: var(--bg);
   color: var(--text);
 }
-
-/* Compact native color swatch used in the terminal editor */
-.editor-input--color {
-  width: 32px;
-  padding: 1px 2px;
-  cursor: pointer;
-}
-.editor-input--color::-webkit-color-swatch-wrapper { padding: 0; }
-.editor-input--color::-webkit-color-swatch { border: none; border-radius: 2px; }
 
 /* Stations editor: one URL input + its remove button, kept on a single row.
    The wrapping list scrolls horizontally so many URLs still fit the 28px bar. */
@@ -849,7 +826,6 @@ html, body {
 .modal-body .editor-input,
 .modal-body .editor-select { height: 26px; font-size: 12px; padding: 2px 6px; }
 .modal-body .editor-btn { height: 26px; font-size: 11px; padding: 2px 12px; }
-.modal-body .editor-input--color { width: 40px; padding: 2px; }
 
 /* Stations: vertical list of URL rows (no horizontal scroll cramping here). */
 .station-url-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }

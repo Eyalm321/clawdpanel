@@ -4,7 +4,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Create as $Create } from "/wails/runtime.js";
+import { Create as $Create } from "@wailsio/runtime";
 
 /**
  * UpdateCheckResult is returned to the brand menu's "Check for updates" item.

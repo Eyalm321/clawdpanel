@@ -4,7 +4,7 @@
 // feature-agnostic body, applies the active theme, and mounts exactly one
 // registered "panel" at a time. Adding a new editable feature is just writing
 // another panel module (see panel-*.js) and registering it in settings.js — the
-// shell knows nothing about accounts, terminals or stations specifically.
+// shell knows nothing about accounts or stations specifically.
 import { Window } from '@wailsio/runtime';
 
 // Same 8-bit invader used by the bar brand (index.html).
@@ -31,8 +31,8 @@ function closeWindow() {
 // createShell builds the chrome once and returns a controller able to swap the
 // mounted panel. `panels` is a map of id -> { title, mount(bodyEl), nav?,
 // navLabel? }. Panels with `nav !== false` get a left-sidebar entry (in map
-// insertion order); a panel with `nav === false` (e.g. the Shift-click
-// terminal-open dialog) hides the sidebar and renders standalone.
+// insertion order); a panel with `nav === false` hides the sidebar and renders
+// standalone as a focused dialog.
 export function createShell(panels) {
   const root = document.getElementById('settings-root');
 
@@ -65,8 +65,8 @@ export function createShell(panels) {
     if (!panel) return;
     titleEl.textContent = panel.title;
 
-    // A non-nav panel (terminal-open) reads as a focused dialog — hide the
-    // sidebar; everything else shows it with the active item highlighted.
+    // A non-nav panel reads as a focused dialog — hide the sidebar; everything
+    // else shows it with the active item highlighted.
     const showNav = panel.nav !== false;
     navEl.style.display = showNav ? '' : 'none';
     navEl.querySelectorAll('.modal-nav-item').forEach((b) => {

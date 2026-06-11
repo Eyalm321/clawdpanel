@@ -50,7 +50,7 @@ func (m *Manager) Build(
 	m.tray.SetIcon(iconBytes)
 
 	m.menu = app.NewMenu()
-	m.menu.Add(fmt.Sprintf("Claude Panel %s", version)).SetEnabled(false)
+	m.menu.Add(fmt.Sprintf("Clawd Panel %s", version)).SetEnabled(false)
 	m.menu.AddSeparator()
 
 	// Accounts
@@ -81,8 +81,8 @@ func (m *Manager) Build(
 		controller.ToggleStartup()
 	})
 
-	// Settings — opens the unified window (Accounts / Terminals / Stations / Bar
-	// Options) with a left-sidebar nav, replacing the old per-feature items.
+	// Settings — opens the unified window (Accounts / Stations / Bar Options)
+	// with a left-sidebar nav, replacing the old per-feature items.
 	m.menu.Add("Settings...").OnClick(func(ctx *application.Context) {
 		controller.OpenSettings()
 	})

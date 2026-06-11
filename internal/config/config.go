@@ -17,14 +17,6 @@ type HotkeyConfig struct {
 	ToggleClickThrough string `json:"toggleClickThrough"`
 }
 
-// TerminalConfig is one launcher entry shown in the bar's terminal cycler.
-type TerminalConfig struct {
-	Name    string `json:"name"`
-	Color   string `json:"color"`             // "#RRGGBB"; "" = none
-	Dir     string `json:"dir"`               // "~" allowed
-	Command string `json:"command,omitempty"` // default "claude"
-}
-
 // StationItemKind classifies one entry in a radio station's collection. It is a
 // hint from URL parsing; the resolver is authoritative on live-vs-VOD (a
 // watch?v= with a non-empty HLS manifest is treated as a livestream).
@@ -54,15 +46,6 @@ type StationConfig struct {
 	Shuffle bool          `json:"shuffle"`
 }
 
-// LauncherConfig is the single, global choice of terminal program used to open
-// every launcher entry. Preset == "" means "not yet resolved" — OpenTerminal
-// detects a sensible default lazily on first use and persists it here.
-type LauncherConfig struct {
-	Preset string   `json:"preset"`         // "windows-terminal", …, "custom"; "" = detect lazily
-	Exe    string   `json:"exe,omitempty"`  // override (custom / edited builtin)
-	Args   []string `json:"args,omitempty"` // override template
-}
-
 // FeatureConfig toggles which optional bar segments are active. Disabling a
 // feature hides its segment AND, where one exists, frees the backing resource
 // rather than merely hiding the UI — Radio is the notable case: when off, the
@@ -72,7 +55,6 @@ type LauncherConfig struct {
 // config keeps unspecified flags enabled because Load unmarshals over Defaults.
 type FeatureConfig struct {
 	Radio       bool `json:"radio"`       // #seg-radio + native audio engine
-	Terminals   bool `json:"terminals"`   // #seg-term ("LAUNCH")
 	Monitor     bool `json:"monitor"`     // #seg-mon cycler
 	Theme       bool `json:"theme"`       // #seg-theme cycler
 	WeeklyUsage bool `json:"weeklyUsage"` // #seg-msgs + #seg-reset
@@ -92,8 +74,6 @@ type Config struct {
 	ClickThrough     bool             `json:"clickThrough"`
 	AppBarMode       bool             `json:"appBarMode"` // push apps down (AppBar API)
 	Pinned           bool             `json:"pinned"`     // false = auto-hide on mouseleave, undocked
-	Terminals        []TerminalConfig `json:"terminals"`
-	Launcher         LauncherConfig   `json:"launcher"`
 	Stations         []StationConfig  `json:"stations"`
 	ActiveStation    int              `json:"activeStation"`
 	RadioVolume      float64          `json:"radioVolume"` // 0..1, persisted
@@ -160,7 +140,6 @@ func Defaults() Config {
 		// Every optional segment on by default — preserves the pre-toggle bar.
 		Features: FeatureConfig{
 			Radio:       true,
-			Terminals:   true,
 			Monitor:     true,
 			Theme:       true,
 			WeeklyUsage: true,

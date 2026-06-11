@@ -21,7 +21,6 @@ import (
 	"clawdpanel/internal/radio"
 	"clawdpanel/internal/reveal"
 	"clawdpanel/internal/station"
-	"clawdpanel/internal/terminal"
 	"clawdpanel/internal/tray"
 
 	"context"
@@ -304,13 +303,12 @@ func (a *App) ToggleStartup() {
 }
 
 // OpenSettings opens the unified settings window (on the Accounts section). The
-// window's left-sidebar nav lets the user move to Terminals / Stations / Bar
-// Options from there — replacing the old per-feature tray items.
+// window's left-sidebar nav lets the user move to Stations / Bar Options from
+// there — replacing the old per-feature tray items.
 func (a *App) OpenSettings() { a.openSettings("accounts", 0, "") }
 
 // settingsShowPayload tells the popup which panel to render. Index/Name carry
-// extra context for context-specific panels (e.g. "terminal-open" needs the
-// terminal entry to launch and its display name); they're 0/"" otherwise.
+// extra context for context-specific panels; they're 0/"" otherwise.
 type settingsShowPayload struct {
 	Panel string `json:"panel"`
 	Index int    `json:"index"`
@@ -318,7 +316,7 @@ type settingsShowPayload struct {
 }
 
 // openSettings shows the reusable settings popup focused on the given panel
-// ("accounts", "terminals", "stations", or "terminal-open"). The window is its
+// ("accounts", "stations", or "options"). The window is its
 // own frameless WebviewWindow (the bar itself is only BarHeight tall, with no
 // room for a modal). It is created lazily and hidden — not destroyed — on close,
 // so reopening preserves page state and is cheap.
@@ -338,7 +336,7 @@ func (a *App) openSettings(panel string, index int, name string) {
 		}
 		a.settingsWindow = a.app.Window.NewWithOptions(application.WebviewWindowOptions{
 			Name:             "settings",
-			Title:            "Claude Panel",
+			Title:            "Clawd Panel",
 			Width:            660,
 			Height:           420,
 			MinWidth:         520,
@@ -1002,93 +1000,6 @@ func (a *App) SetEditorOpen(open bool) {
 // GetPushdownStats returns active diagnostics for macOS window pushdown.
 func (a *App) GetPushdownStats() platform.PushdownStats {
 	return platform.GetPushdownStats()
-}
-
-// OpenTerminal launches the configured launcher entry at index in a new,
-// visible terminal window, scoped to the currently-shown account. It's the
-// plain-click path; OpenTerminalAs is the general form.
-func (a *App) OpenTerminal(index int, sublabel string) error {
-	return a.OpenTerminalAs(index, a.cfg.ActiveAccount, sublabel)
-}
-
-// OpenTerminalAs launches the launcher entry at index scoped to accountIndex's
-// account (its name tags the title and its config dir becomes CLAUDE_CONFIG_DIR
-// for the launched `claude`). It's the Shift-click path, where the popup lets
-// the user pick an account other than the active one. accountIndex out of range
-// launches unscoped. The launcher program is resolved lazily on first use (no
-// terminal detection happens in config.Defaults) and persisted. sublabel is an
-// optional per-launch suffix appended to the tab title ("CRM · backend") so
-// several terminals from one entry can be told apart; "" for a plain open.
-func (a *App) OpenTerminalAs(index, accountIndex int, sublabel string) error {
-	if !a.cfg.Features.Terminals {
-		return fmt.Errorf("terminal launching is disabled")
-	}
-	if index < 0 || index >= len(a.cfg.Terminals) {
-		return fmt.Errorf("terminal index %d out of range", index)
-	}
-	if a.cfg.Launcher.Preset == "" {
-		a.cfg.Launcher = terminal.DetectDefault()
-		if err := config.Save(a.cfg); err != nil {
-			log.Printf("[terminal] failed to persist detected launcher: %v", err)
-		} else {
-			log.Printf("[terminal] detected launcher preset %q", a.cfg.Launcher.Preset)
-		}
-	}
-	entry := a.cfg.Terminals[index]
-	opts := terminal.LaunchOpts{Sublabel: sublabel}
-	if accountIndex >= 0 && accountIndex < len(a.cfg.Accounts) {
-		acc := a.cfg.Accounts[accountIndex]
-		opts.Account = acc.Name
-		opts.ConfigDir = acc.Path
-	}
-	if err := terminal.Launch(entry, a.cfg.Launcher, opts); err != nil {
-		log.Printf("[terminal] open %q via %s failed: %v", entry.Name, a.cfg.Launcher.Preset, err)
-		return fmt.Errorf("failed to open terminal: %w", err)
-	}
-	log.Printf("[terminal] opened %q (account %q) via %s", entry.Name, opts.Account, a.cfg.Launcher.Preset)
-	return nil
-}
-
-// OpenTerminalPrompt opens the settings popup on the "terminal-open" panel — an
-// account picker + sublabel textbox for entry index. It's the Shift-click path
-// from the bar; the panel then calls OpenTerminalAs(index, account, sublabel).
-// Plain click skips this and opens directly.
-func (a *App) OpenTerminalPrompt(index int) error {
-	if !a.cfg.Features.Terminals {
-		return fmt.Errorf("terminal launching is disabled")
-	}
-	if index < 0 || index >= len(a.cfg.Terminals) {
-		return fmt.Errorf("terminal index %d out of range", index)
-	}
-	a.openSettings("terminal-open", index, a.cfg.Terminals[index].Name)
-	return nil
-}
-
-// ListTerminalPresets returns the builtin terminal programs for this OS plus
-// the custom escape hatch, for the bar editor's dropdown.
-func (a *App) ListTerminalPresets() []terminal.PresetInfo {
-	return terminal.Presets()
-}
-
-// DetectTerminal returns the auto-detected launcher for this machine without
-// persisting it — used by the editor to preselect a sensible default.
-func (a *App) DetectTerminal() config.LauncherConfig {
-	return terminal.DetectDefault()
-}
-
-// PickDirectory opens a native folder-picker and returns the chosen absolute
-// path, or "" if the user cancelled. The terminal editor uses this for the DIR
-// field — a browser file input can't yield a real OS path in WebView2.
-func (a *App) PickDirectory() (string, error) {
-	dlg := a.app.Dialog.OpenFile().
-		CanChooseDirectories(true).
-		CanChooseFiles(false).
-		CanCreateDirectories(true).
-		SetTitle("Select a directory")
-	if a.window != nil {
-		dlg.AttachToWindow(a.window)
-	}
-	return dlg.PromptForSingleSelection()
 }
 
 func (a *App) watchClaudeStatus(ctx context.Context) {

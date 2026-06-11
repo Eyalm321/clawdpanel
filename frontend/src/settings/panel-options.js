@@ -8,7 +8,6 @@ import { GetConfig, SaveConfig } from '../../bindings/clawdpanel/app.js';
 // key → label, in display order. Keys match config.FeatureConfig json tags.
 const FEATURES = [
   { key: 'radio', label: 'RADIO' },
-  { key: 'terminals', label: 'LAUNCH' },
   { key: 'monitor', label: 'MONITOR' },
   { key: 'theme', label: 'THEME' },
   { key: 'weeklyUsage', label: 'WEEKLY USAGE' },
