@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
+	"runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -14,6 +16,15 @@ var assets embed.FS
 // trayIconBytes is defined per-OS in icon_{windows,darwin,linux}.go.
 
 func main() {
+	// Linux v1: run under XWayland even on Wayland sessions. Wayland gives
+	// apps no way to self-position or stay always-on-top (and GNOME/Mutter
+	// has no layer-shell for third parties), so the whole docking path —
+	// wmctrl geometry, _NET_WM_WINDOW_TYPE_DOCK, struts — only works as an
+	// X11 client. Must be set before GTK initializes.
+	if runtime.GOOS == "linux" && os.Getenv("CLAWDPANEL_NO_XWAYLAND") == "" {
+		os.Setenv("GDK_BACKEND", "x11")
+	}
+
 	app := NewApp()
 
 	wailsApp := application.New(application.Options{
@@ -48,7 +59,10 @@ func main() {
 		MaxHeight:        0,
 		Frameless:        true,
 		AlwaysOnTop:      true,
-		DisableResize:    true,
+		// On Linux fixed-size WM hints would also block our own wmctrl resize
+		// when docking the bar to the monitor width; dock-type windows aren't
+		// user-resizable anyway.
+		DisableResize:    runtime.GOOS != "linux",
 		Hidden:           true,
 		BackgroundColour: application.NewRGB(0x0B, 0x0C, 0x0E),
 	})

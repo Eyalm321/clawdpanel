@@ -216,6 +216,22 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	time.Sleep(300 * time.Millisecond)
 
 	hwnd := uintptr(window.NativeWindow())
+	if runtime.GOOS == "linux" {
+		// Linux v1: the reveal controller's hide/show + cursor-poll primitives
+		// are no-ops here and GNOME needs an extension to show the tray icon,
+		// so nothing would ever surface the Hidden-by-default window. Show it
+		// before resolving the X id below — wmctrl only lists mapped windows.
+		window.Show()
+		// NativeWindow returns a GTK pointer on Linux, not an X11 window ID —
+		// resolve the real X id (wmctrl PID lookup) so the xprop/wmctrl-based
+		// docking path operates on the right window.
+		if id, err := platform.FindWindowByPID(); err == nil {
+			hwnd = id
+		} else {
+			log.Printf("platform: %v; docking disabled", err)
+			hwnd = 0
+		}
+	}
 	a.hwnd = hwnd
 	a.revealCtrl = reveal.New(hwnd)
 	platform.ApplyBarStyles(hwnd)
@@ -243,14 +259,6 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	}
 
 	a.runTray()
-	if runtime.GOOS == "linux" {
-		// Linux v1: the window starts Hidden and the reveal controller's
-		// hide/show + cursor-poll primitives are no-ops here, so nothing
-		// would ever surface the bar (and GNOME needs an extension to show
-		// the tray icon). Show it unconditionally; auto-hide stays
-		// Windows-only.
-		window.Show()
-	}
 	// The reveal controller owns the cursor poll loop and the whole auto-hide
 	// state machine now; App just starts it.
 	go a.revealCtrl.Run(a.app.Context())
