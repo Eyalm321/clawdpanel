@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"os"
-	"regexp"
 	"strconv"
 	"testing"
 )
@@ -113,8 +112,7 @@ func TestStaticizeLiveMPDRejectsNonDynamic(t *testing.T) {
 // firstSegListTag returns the first attributed <SegmentList ...> tag, for
 // error messages.
 func firstSegListTag(b []byte) string {
-	m := regexp.MustCompile(`<SegmentList [^>]*>`).Find(b)
-	return string(m)
+	return string(reSegListBlock.Find(b))[:120]
 }
 
 // utf8XMLWellFormed checks the bytes parse as XML.

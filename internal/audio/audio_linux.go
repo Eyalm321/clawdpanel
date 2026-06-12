@@ -51,10 +51,11 @@ func initGStreamer() {
 	})
 }
 
-// playbackPhase is the player's lifecycle position for the current track.
-// All transitions happen under LinuxPlayer.mu:
+// playbackPhase is the user-intent half of the player's state for the current
+// track: it gates which pipeline state changes are reported to the UI. All
+// transitions happen under LinuxPlayer.mu:
 //
-//	Play ──────────────► prerolling ──(ASYNC_DONE + buffer 100%)──► playing
+//	Play ──────────────► prerolling ──(promotion to PLAYING lands)──► playing
 //	  │ (live source)                                                │  ▲
 //	  └────────────────────────────────────────────────────────────► │  │
 //	Pause: {prerolling,playing} ► paused          Resume: paused ────┘  │
@@ -75,13 +76,34 @@ func (ph playbackPhase) wantsPlayback() bool {
 	return ph == phasePrerolling || ph == phasePlaying
 }
 
-// trackState is the per-track progress through the preroll dance. Reset by
-// Play; guarded by LinuxPlayer.mu.
+func (ph playbackPhase) String() string {
+	switch ph {
+	case phaseIdle:
+		return "idle"
+	case phasePrerolling:
+		return "prerolling"
+	case phasePlaying:
+		return "playing"
+	case phasePaused:
+		return "paused"
+	}
+	return "?"
+}
+
+// trackState is the per-track player state, reset by Play; guarded by
+// LinuxPlayer.mu.
+//
+// The initial-fill fields (prerolled/fillDone/lowBuffer) are deliberately
+// ORTHOGONAL to phase: the buffering hold must survive phase changes — a
+// pause/resume mid-fill, or a stale PLAYING state-change landing during a
+// buffer dip, must not cancel the management or the pipeline wedges in
+// PAUSED with the UI showing playing.
 type trackState struct {
 	phase     playbackPhase
 	live      bool     // NO_PREROLL source or resolver live-hint: skip buffering management entirely
 	prerolled bool     // ASYNC_DONE received: the demuxer's segment mapping is settled
-	buffered  bool     // initial buffer at 100% (true until the first <100% report)
+	fillDone  bool     // initial buffer fill complete: promotion to PLAYING was issued; later dips are unmanaged
+	lowBuffer bool     // mid-fill dip below 100%: pipeline held in PAUSED, state-change reports suppressed
 	confirmed bool     // StatePlaying already reported to the UI for this track
 	lastPos   C.gint64 // last queried position, for advance detection (-1 = none yet)
 }
@@ -175,8 +197,8 @@ func (p *LinuxPlayer) Play(url string) error {
 	// PLAYING races the demuxer's initial segment event — DASH segments keep
 	// their original live-stream timestamps, and without the segment mapping
 	// settled the sink schedules them hours into the future: position
-	// advances, pure silence. monitorBus promotes to PLAYING once both
-	// ASYNC_DONE and buffering-100% have landed (maybePromote).
+	// advances, pure silence. monitorBus promotes to PLAYING once preroll
+	// settles and the initial buffer fills (handleAsyncDone/handleBuffering).
 	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
 	if ret == C.GST_STATE_CHANGE_FAILURE {
 		p.mu.Unlock()
@@ -194,7 +216,7 @@ func (p *LinuxPlayer) Play(url string) error {
 	p.track = trackState{
 		phase:    phasePrerolling,
 		live:     live,
-		buffered: true, // until the first <100% buffering report
+		fillDone: live, // live tracks have no managed fill
 		lastPos:  -1,
 	}
 	if live {
@@ -368,16 +390,20 @@ func (p *LinuxPlayer) handleBusMessage(msg *C.GstMessage) {
 	}
 }
 
-// handleAsyncDone marks preroll settled and promotes if the buffer is ready.
+// handleAsyncDone marks preroll settled and promotes to PLAYING if the
+// initial fill isn't being held back by a low buffer. The set_state runs
+// under p.mu so the check-and-promote is atomic against a concurrent Pause.
 func (p *LinuxPlayer) handleAsyncDone() {
 	p.mu.Lock()
-	p.track.prerolled = true
-	promote := p.promotablePipeline()
-	p.mu.Unlock()
-	log.Printf("[audio] gst: ASYNC_DONE (promote=%v)", promote)
+	t := &p.track
+	t.prerolled = true
+	promote := !t.fillDone && !t.lowBuffer && t.phase.wantsPlayback()
 	if promote {
+		t.fillDone = true
 		C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
 	}
+	p.mu.Unlock()
+	log.Printf("[audio] gst: ASYNC_DONE (promote=%v)", promote)
 }
 
 // handleBuffering manages the PAUSED hold during the initial buffer fill.
@@ -385,88 +411,82 @@ func (p *LinuxPlayer) handleAsyncDone() {
 // Network streams must sit in PAUSED until the buffer fills, then resume —
 // without this the pipeline stalls in preroll and playback never starts
 // (gst-launch does this dance for you; applications must do it themselves).
-// The hold applies ONLY while prerolling: once the track plays, re-pausing on
-// every sub-100% dip turns network jitter into audible stutter — the queue
-// absorbs dips on its own. Promotion additionally waits for ASYNC_DONE:
-// going PLAYING mid-preroll races the demuxer's segment event and the sink
-// schedules buffers at their raw media timestamps — silence (see Play).
+// The hold applies ONLY during the initial fill (!fillDone): once promotion
+// has been issued, re-pausing on every sub-100% dip turns network jitter
+// into audible stutter — the queue absorbs dips on its own. Promotion
+// additionally waits for ASYNC_DONE (prerolled): going PLAYING mid-preroll
+// races the demuxer's segment event and the sink schedules buffers at their
+// raw media timestamps — silence (see Play). Management is keyed on
+// fillDone, NOT phase: a pause/resume mid-fill or a stale PLAYING
+// state-change must not cancel the hold.
 func (p *LinuxPlayer) handleBuffering(percent int) {
 	p.mu.Lock()
 	t := &p.track
-	managed := !t.live && t.phase == phasePrerolling
+	managed := !t.live && !t.fillDone
+	promoted := false
 	if managed {
-		t.buffered = percent == 100
+		t.lowBuffer = percent < 100
+		if percent < 100 {
+			C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
+		} else if t.prerolled && t.phase.wantsPlayback() {
+			t.fillDone = true
+			promoted = true
+			C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
+		}
 	}
-	promote := managed && p.promotablePipeline()
 	live, phase, prerolled := t.live, t.phase, t.prerolled
 	p.mu.Unlock()
 
 	if percent == 100 || percent%25 == 0 {
-		log.Printf("[audio] gst: buffering %d%% (live=%v phase=%d prerolled=%v)", percent, live, phase, prerolled)
+		log.Printf("[audio] gst: buffering %d%% (live=%v phase=%s prerolled=%v promoted=%v)", percent, live, phase, prerolled, promoted)
 	}
-	if !managed {
-		return
-	}
-	if percent < 100 {
-		C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
-	} else if promote {
-		C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
-	}
-}
-
-// promotablePipeline reports whether the preroll dance is complete and the
-// pipeline should be promoted to PLAYING. Callers must hold p.mu. The phase
-// stays phasePrerolling until the PLAYING state-change lands, so a buffer dip
-// between the promotion request and that state-change still re-pauses.
-func (p *LinuxPlayer) promotablePipeline() bool {
-	return p.track.phase == phasePrerolling && p.track.prerolled && p.track.buffered
 }
 
 // handleStateChanged turns settled playbin state changes into UI events.
 // Phase gates each emit: transitional preroll pauses and the READY bounce in
-// Play would otherwise flicker the UI through paused/idle.
+// Play would otherwise flicker the UI through paused/idle. While a mid-fill
+// buffer dip holds the pipeline (lowBuffer), every report is suppressed: the
+// in-flight PLAYING state-change from a just-issued promotion would otherwise
+// read as "playback started" while the pipeline is being re-paused.
 func (p *LinuxPlayer) handleStateChanged(oldState, newState, pendingState C.GstState) {
+	var ev Event
+	settled := pendingState == C.GST_STATE_VOID_PENDING
+
 	p.mu.Lock()
-	phase := p.track.phase
+	t := &p.track
+	phase := t.phase
+	suppressed := t.lowBuffer
+	if !suppressed {
+		switch newState {
+		case C.GST_STATE_PLAYING:
+			// PLAYING is reported even mid-transition (pending != VOID):
+			// live pipelines can stream audio while the async state change
+			// never completes, and the UI would sit on "loading" despite
+			// audible playback.
+			if t.phase.wantsPlayback() {
+				t.phase = phasePlaying
+				t.confirmed = true
+				ev = Event{State: StatePlaying}
+			}
+		case C.GST_STATE_PAUSED:
+			// Settled PAUSED is user-facing only when the user asked for
+			// it; during the initial fill it is the preroll/buffer hold.
+			if settled && phase == phasePaused {
+				ev = Event{State: StatePaused}
+			}
+		case C.GST_STATE_READY, C.GST_STATE_NULL:
+			// Play() bounces through READY when (re)starting a track —
+			// only a real stop should read as idle.
+			if settled && phase == phaseIdle {
+				ev = Event{State: StateIdle}
+			}
+		}
+	}
 	p.mu.Unlock()
-	log.Printf("[audio] gst: playbin state %d->%d (pending %d, phase=%d)", int(oldState), int(newState), int(pendingState), phase)
 
-	switch newState {
-	case C.GST_STATE_PLAYING:
-		// PLAYING is reported even mid-transition (pending != VOID): live
-		// pipelines can stream audio while the async state change never
-		// completes, and the UI would sit on "loading" despite audible
-		// playback.
-		p.mu.Lock()
-		report := p.track.phase.wantsPlayback()
-		if report {
-			p.track.phase = phasePlaying
-			p.track.confirmed = true
-		}
-		p.mu.Unlock()
-		if report {
-			p.send(Event{State: StatePlaying})
-		}
-
-	case C.GST_STATE_PAUSED:
-		if pendingState != C.GST_STATE_VOID_PENDING {
-			return // transitional preroll pause — not user-facing
-		}
-		// Settled PAUSED is user-facing only when the user asked for it;
-		// during phasePrerolling it is the preroll hold before promotion.
-		if phase == phasePaused {
-			p.send(Event{State: StatePaused})
-		}
-
-	case C.GST_STATE_READY, C.GST_STATE_NULL:
-		if pendingState != C.GST_STATE_VOID_PENDING {
-			return
-		}
-		// Play() bounces through READY when (re)starting a track — only a
-		// real stop should read as idle.
-		if phase == phaseIdle {
-			p.send(Event{State: StateIdle})
-		}
+	log.Printf("[audio] gst: playbin state %d->%d (pending %d, phase=%s, suppressed=%v)", int(oldState), int(newState), int(pendingState), phase, suppressed)
+	if ev.State != "" {
+		p.send(ev)
 	}
 }
 
