@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -689,6 +690,24 @@ var (
 // covering the freshest part of the DVR window (segment timescale is 1000 by
 // observation).
 func staticizeLiveMPD(body []byte) ([]byte, error) {
+	return staticizeLiveMPDWindow(body, liveWindowMs())
+}
+
+// liveWindowMs returns the static-manifest window bound, overridable via
+// CLAWDPANEL_LIVE_WINDOW_MS for testing the EOS→advance loop without waiting
+// out the full ~30min window.
+func liveWindowMs() int64 {
+	if v := os.Getenv("CLAWDPANEL_LIVE_WINDOW_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return maxStaticWindowMs
+}
+
+// staticizeLiveMPDWindow is staticizeLiveMPD with an explicit window bound,
+// split out so tests can exercise the trim with a small window.
+func staticizeLiveMPDWindow(body []byte, windowMs int64) ([]byte, error) {
 	if !bytes.Contains(body, []byte(`type="dynamic"`)) {
 		return nil, fmt.Errorf("MPD is not dynamic")
 	}
@@ -719,7 +738,7 @@ func staticizeLiveMPD(body []byte) ([]byte, error) {
 	if segMs <= 0 {
 		return nil, fmt.Errorf("MPD has no segment duration")
 	}
-	keep := int(maxStaticWindowMs / segMs)
+	keep := int(windowMs / segMs)
 	if keep < 1 {
 		keep = 1
 	}
