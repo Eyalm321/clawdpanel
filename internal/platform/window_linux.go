@@ -88,23 +88,6 @@ func ApplyBarStyles(hwnd uintptr) {
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-b", "add,above").Run()
 }
 
-// gnomeTopBarOffset returns how far below the monitor's top edge the bar must
-// sit to clear GNOME Shell's panel. The panel lives on the primary monitor and
-// is compositor chrome — it draws over X docks regardless of _NET_WM_STATE_ABOVE,
-// and (being a Wayland-native surface) can't be measured via X tooling, so we
-// use its default 1×-scale height. CLAWDPANEL_TOP_OFFSET overrides.
-func gnomeTopBarOffset(mon MonitorInfo) int {
-	if v := os.Getenv("CLAWDPANEL_TOP_OFFSET"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	if !mon.IsPrimary || !strings.Contains(strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP")), "gnome") {
-		return 0
-	}
-	return 32
-}
-
 func DockToMonitor(hwnd uintptr, mon MonitorInfo, barHeight int, appBarMode bool) {
 	if hwnd == 0 {
 		return
@@ -114,17 +97,25 @@ func DockToMonitor(hwnd uintptr, mon MonitorInfo, barHeight int, appBarMode bool
 	if width == 0 {
 		width = mon.Width
 	}
-	top := int(mon.Top) + gnomeTopBarOffset(mon)
+	// The bar rests below any compositor chrome (GNOME panel) on this
+	// monitor — same convention as the darwin port (mon.Top + WorkTopOffset).
+	top := int(mon.Top) + mon.WorkTopOffset
 	// wmctrl -e gravity,x,y,w,h. Gravity 0 = default.
 	geom := fmt.Sprintf("0,%d,%d,%d,%d", mon.Left, top, width, barHeight)
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
-	if appBarMode && !isWayland() {
-		// _NET_WM_STRUT_PARTIAL: left, right, top, bottom, then four ranges.
-		// We reserve "top" = barHeight, range = full mon.Left .. mon.Left+width.
+	if appBarMode && !isWayland() && top == 0 {
+		// _NET_WM_STRUT_PARTIAL reserves space from the ROOT screen edge, so a
+		// top strut is only meaningful when the bar actually rests on the root
+		// top edge. On a monitor below another (or below the GNOME panel) the
+		// strut would carve space out of whatever sits above instead — skip it;
+		// the bar stays above the stack but maximized windows will extend
+		// under it (X11 offers no mid-screen reservation).
 		strut := fmt.Sprintf("0,0,%d,0,0,0,0,0,%d,%d,0,0",
 			barHeight, mon.Left, mon.Left+int32(width))
 		_ = exec.Command("xprop", "-id", id, "-f", "_NET_WM_STRUT_PARTIAL", "32c",
 			"-set", "_NET_WM_STRUT_PARTIAL", strut).Run()
+	} else {
+		_ = exec.Command("xprop", "-id", id, "-remove", "_NET_WM_STRUT_PARTIAL").Run()
 	}
 }
 
@@ -187,22 +178,59 @@ func SetOpacity(hwnd uintptr, opacity float64) {
 // signature (which scopes detection to the bar's display) but is unused here.
 func IsFullScreenActive(MonitorInfo) bool { return false }
 
-// AutoHideSupported is false on Linux — the slide-up animation primitives
-// aren't wired up at v1.
-func AutoHideSupported() bool { return false }
+// AutoHideSupported: the slide/hide primitives below are wired up via xdotool,
+// so the reveal machine's hover auto-hide and pin toggle work on Linux.
+func AutoHideSupported() bool { return true }
 
-// GetCursorPos is a stub on Linux; the hover-watcher is Windows-only for v1.
-func GetCursorPos() (int, int) { return -1, -1 }
+// GetCursorPos reads the root-relative cursor position via xdotool. Returns
+// (-1, -1) — the reveal machine's "no cursor source" sentinel — on failure.
+func GetCursorPos() (int, int) {
+	out, err := exec.Command("xdotool", "getmouselocation", "--shell").Output()
+	if err != nil {
+		return -1, -1
+	}
+	x, y := -1, -1
+	for _, line := range strings.Split(string(out), "\n") {
+		if kv := strings.SplitN(line, "=", 2); len(kv) == 2 {
+			if v, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil {
+				switch strings.TrimSpace(kv[0]) {
+				case "X":
+					x = v
+				case "Y":
+					y = v
+				}
+			}
+		}
+	}
+	return x, y
+}
 
 // ResetDwmFrame is a Windows-only concept; no-op elsewhere.
 func ResetDwmFrame(hwnd uintptr) {}
 
-// HideWindow / ShowWindow no-op on Linux for now (auto-hide is Windows-only v1).
-func HideWindow(hwnd uintptr) {}
-func ShowWindow(hwnd uintptr) {}
+// HideWindow / ShowWindow unmap/map the X window (collapse/reveal).
+func HideWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	_ = exec.Command("xdotool", "windowunmap", fmt.Sprintf("0x%08x", uint32(hwnd))).Run()
+}
 
-// MoveWindow no-op on Linux for now (slide animation is Windows-only v1).
-func MoveWindow(hwnd uintptr, x, y int) {}
+func ShowWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	_ = exec.Command("xdotool", "windowmap", fmt.Sprintf("0x%08x", uint32(hwnd))).Run()
+}
+
+// MoveWindow repositions the bar (the reveal machine's slide animation).
+func MoveWindow(hwnd uintptr, x, y int) {
+	if hwnd == 0 {
+		return
+	}
+	_ = exec.Command("xdotool", "windowmove", fmt.Sprintf("0x%08x", uint32(hwnd)),
+		strconv.Itoa(x), strconv.Itoa(y)).Run()
+}
 
 // SetWindowClipTop no-op on Linux for now.
 func SetWindowClipTop(hwnd uintptr, width, height, topClip int) {}

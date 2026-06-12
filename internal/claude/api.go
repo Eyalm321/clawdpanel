@@ -35,6 +35,14 @@ type rateLimitsFile struct {
 	ModelID    string           `json:"model_id"`
 	Model      *rateLimitModel  `json:"model"`
 	CapturedAt int64            `json:"captured_at"`
+
+	// The statusline wrapper dumps Claude Code's full statusline payload,
+	// where the windows live nested under "rate_limits"; the top-level
+	// fields above cover captures that store the block directly.
+	RateLimits *struct {
+		FiveHour *rateLimitWindow `json:"five_hour"`
+		SevenDay *rateLimitWindow `json:"seven_day"`
+	} `json:"rate_limits"`
 }
 
 // readUsage loads the most recent rate-limit data captured by the statusline
@@ -62,6 +70,14 @@ func readUsage(accountPath string) *APIUsage {
 		}
 	}
 
+	if rl.RateLimits != nil {
+		if rl.SevenDay == nil {
+			rl.SevenDay = rl.RateLimits.SevenDay
+		}
+		if rl.FiveHour == nil {
+			rl.FiveHour = rl.RateLimits.FiveHour
+		}
+	}
 	if rl.SevenDay != nil {
 		out.WeeklyPercent = clampPct(rl.SevenDay.UsedPercentage / 100.0)
 		if rl.SevenDay.ResetsAt > 0 {
