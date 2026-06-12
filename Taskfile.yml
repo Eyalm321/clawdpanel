@@ -133,6 +133,7 @@ tasks:
     sources:
       - "**/*"
       - exclude: node_modules/**/*
+      - exclude: dist/**/*
     generates:
       - dist/**/*
     deps:

@@ -101,6 +101,19 @@ export class MonitorInfo {
              */
             this["workTopOffset"] = 0;
         }
+        if (!("dockEdge" in $$source)) {
+            /**
+             * DockEdge is which edge of this monitor the bar should dock to: "top"
+             * (default; empty string means top) or "bottom". Linux sets it per
+             * monitor: X11 struts can only reserve space measured from the ROOT
+             * screen edges, so on stacked layouts a monitor with another above it
+             * can only get true space reservation along its bottom edge. Windows
+             * and macOS always dock top and leave this empty.
+             * @member
+             * @type {string}
+             */
+            this["dockEdge"] = "";
+        }
 
         Object.assign(this, $$source);
     }
