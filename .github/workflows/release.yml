@@ -72,10 +72,29 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          choco install nsis -y --no-progress
-          # Chocolatey's NSIS install doesn't add makensis to PATH for the
-          # next step's shell. Append it to GITHUB_PATH so Wails finds it.
-          "C:\Program Files (x86)\NSIS" | Out-File -Append -Encoding utf8 -FilePath $env:GITHUB_PATH
+          # Chocolatey first (with retry), then a direct SourceForge zip as
+          # fallback: the community feed 504'd for over an hour during the
+          # v2.2.2 release. The install failure must also FAIL THE STEP -
+          # without an explicit makensis check the trailing PATH append
+          # swallowed the exit code and the build died two steps later with
+          # a bare "makensis not found".
+          $nsisDir = "C:\Program Files (x86)\NSIS"
+          foreach ($attempt in 1..2) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "$nsisDir\makensis.exe")) { break }
+            Write-Host "choco install nsis failed (attempt $attempt)"
+            Start-Sleep -Seconds 15
+          }
+          if (-not (Test-Path "$nsisDir\makensis.exe")) {
+            Write-Host "Chocolatey unavailable; falling back to SourceForge zip"
+            $zip = Join-Path $env:TEMP "nsis.zip"
+            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip" -OutFile $zip -UserAgent "Wget/1.21" -MaximumRedirection 10
+            Expand-Archive $zip -DestinationPath "C:\nsis-fallback" -Force
+            $nsisDir = "C:\nsis-fallback\nsis-3.11"
+          }
+          if (-not (Test-Path "$nsisDir\makensis.exe")) { throw "makensis.exe not found after install" }
+          # NSIS isn't added to PATH for the next step's shell either way.
+          $nsisDir | Out-File -Append -Encoding utf8 -FilePath $env:GITHUB_PATH
 
       - name: Build Windows installer
         if: matrix.os == 'windows-latest'
