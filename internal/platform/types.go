@@ -22,6 +22,13 @@ type MonitorInfo struct {
 	// animation target and the hover-detection hit box so they agree with
 	// where DockToMonitor actually places the window.
 	WorkTopOffset int `json:"workTopOffset"`
+	// DockEdge is which edge of this monitor the bar should dock to: "top"
+	// (default; empty string means top) or "bottom". Linux sets it per
+	// monitor: X11 struts can only reserve space measured from the ROOT
+	// screen edges, so on stacked layouts a monitor with another above it
+	// can only get true space reservation along its bottom edge. Windows
+	// and macOS always dock top and leave this empty.
+	DockEdge string `json:"dockEdge"`
 }
 
 // PushdownStats contains diagnostic information about macOS window pushdown.
