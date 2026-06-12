@@ -87,7 +87,62 @@ func GetMonitors() []MonitorInfo {
 			DpiScale: 1.0, IsPrimary: true, Name: "default",
 		}}
 	}
+	for i := range monitors {
+		monitors[i].DockEdge = pickDockEdge(monitors[i], monitors)
+	}
+	lastMonitors = monitors
 	return monitors
+}
+
+// lastMonitors caches the most recent layout so DockToMonitor can re-check
+// edge reservability without another xrandr round-trip.
+var lastMonitors []MonitorInfo
+
+func xOverlap(a, b MonitorInfo) bool {
+	return int(a.Left) < int(b.Left)+widthPx(b) && int(b.Left) < int(a.Left)+widthPx(a)
+}
+
+func widthPx(m MonitorInfo) int {
+	if m.PhysWidth != 0 {
+		return m.PhysWidth
+	}
+	return m.Width
+}
+
+// edgeReservable reports whether a strut along the given edge of mon would
+// reserve only mon's own space. Struts are measured from the ROOT screen
+// edge, so any other monitor occupying the band between that root edge and
+// mon (within mon's x-range) would be carved up instead.
+func edgeReservable(mon MonitorInfo, all []MonitorInfo, edge string) bool {
+	for _, o := range all {
+		if o.Index == mon.Index || !xOverlap(mon, o) {
+			continue
+		}
+		if edge == "bottom" {
+			if int(o.Top)+o.Height > int(mon.Top)+mon.Height {
+				return false
+			}
+		} else {
+			if int(o.Top) < int(mon.Top) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// pickDockEdge prefers the top edge, falling back to the bottom when only the
+// bottom can actually reserve space (e.g. a center monitor with another above
+// it). If neither edge is reservable the bar still docks top — visible and
+// above the stack, just without a strut.
+func pickDockEdge(mon MonitorInfo, all []MonitorInfo) string {
+	if edgeReservable(mon, all, "top") {
+		return "top"
+	}
+	if edgeReservable(mon, all, "bottom") {
+		return "bottom"
+	}
+	return "top"
 }
 
 // parseXrandrGeometry parses "1920/598x1080/336+0+0" → 1920, 1080, 0, 0.

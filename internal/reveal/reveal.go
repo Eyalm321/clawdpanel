@@ -139,11 +139,26 @@ func widthOf(mon platform.MonitorInfo) int {
 	return mon.Width
 }
 
-// onScreenY is the bar's resting top, below any chrome above it (e.g. the macOS
-// menu bar via WorkTopOffset). offScreenY is computed from the monitor's TRUE
-// top so the window fully clears the screen when collapsed.
-func onScreenY(s snapshot) int  { return int(s.mon.Top) + s.mon.WorkTopOffset }
-func offScreenY(s snapshot) int { return int(s.mon.Top) - s.barHeight }
+// onScreenY is the bar's resting top: below any chrome above it (e.g. the
+// macOS menu bar via WorkTopOffset) when top-docked, hugging the monitor's
+// bottom when bottom-docked (Linux picks the edge per monitor — see
+// MonitorInfo.DockEdge). offScreenY fully clears the screen past the docked
+// edge so the window is gone when collapsed.
+func bottomDocked(s snapshot) bool { return s.mon.DockEdge == "bottom" }
+
+func onScreenY(s snapshot) int {
+	if bottomDocked(s) {
+		return int(s.mon.Top) + s.mon.Height - s.barHeight
+	}
+	return int(s.mon.Top) + s.mon.WorkTopOffset
+}
+
+func offScreenY(s snapshot) int {
+	if bottomDocked(s) {
+		return int(s.mon.Top) + s.mon.Height
+	}
+	return int(s.mon.Top) - s.barHeight
+}
 
 // Configure refreshes the geometry/mode snapshot and re-applies click-through.
 // Call it wherever the bar is (re)docked and on pin / click-through changes.
@@ -249,8 +264,14 @@ func (c *Controller) cursorOverBar(s snapshot) bool {
 		return false // platform stub (no cursor source)
 	}
 	width := widthOf(s.mon)
-	return cx >= int(s.mon.Left) && cx < int(s.mon.Left)+width &&
-		cy >= int(s.mon.Top) && cy < int(s.mon.Top)+s.mon.WorkTopOffset+s.barHeight
+	if cx < int(s.mon.Left) || cx >= int(s.mon.Left)+width {
+		return false
+	}
+	if bottomDocked(s) {
+		monBottom := int(s.mon.Top) + s.mon.Height
+		return cy >= monBottom-s.barHeight && cy < monBottom
+	}
+	return cy >= int(s.mon.Top) && cy < int(s.mon.Top)+s.mon.WorkTopOffset+s.barHeight
 }
 
 // SetEditorOpen forces the bar expanded while the inline accounts editor is shown
@@ -377,6 +398,9 @@ func (c *Controller) animateY(s snapshot, targetY int, gen uint64, hideAfter boo
 	// Once any pixel has crossed above mon.Top, clip one extra pixel to absorb
 	// DPI/rounding slop that would otherwise leave a row on the monitor above.
 	clipFor := func(y int) int {
+		if bottomDocked(s) {
+			return 0 // slides off the bottom; nothing above to spill onto
+		}
 		top := monTop - y
 		if top > 0 {
 			top++

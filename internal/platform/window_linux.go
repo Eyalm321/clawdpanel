@@ -97,26 +97,44 @@ func DockToMonitor(hwnd uintptr, mon MonitorInfo, barHeight int, appBarMode bool
 	if width == 0 {
 		width = mon.Width
 	}
-	// The bar rests below any compositor chrome (GNOME panel) on this
-	// monitor — same convention as the darwin port (mon.Top + WorkTopOffset).
-	top := int(mon.Top) + mon.WorkTopOffset
+	// Resting position: top edge sits below any compositor chrome (GNOME
+	// panel; same convention as darwin's mon.Top + WorkTopOffset), bottom
+	// edge hugs the monitor's bottom (taskbar-style).
+	y := int(mon.Top) + mon.WorkTopOffset
+	if mon.DockEdge == "bottom" {
+		y = int(mon.Top) + mon.Height - barHeight
+	}
 	// wmctrl -e gravity,x,y,w,h. Gravity 0 = default.
-	geom := fmt.Sprintf("0,%d,%d,%d,%d", mon.Left, top, width, barHeight)
+	geom := fmt.Sprintf("0,%d,%d,%d,%d", mon.Left, y, width, barHeight)
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
-	if appBarMode && !isWayland() && top == 0 {
-		// _NET_WM_STRUT_PARTIAL reserves space from the ROOT screen edge, so a
-		// top strut is only meaningful when the bar actually rests on the root
-		// top edge. On a monitor below another (or below the GNOME panel) the
-		// strut would carve space out of whatever sits above instead — skip it;
-		// the bar stays above the stack but maximized windows will extend
-		// under it (X11 offers no mid-screen reservation).
+
+	// _NET_WM_STRUT_PARTIAL reserves space measured from the ROOT screen
+	// edges. The depth therefore includes everything between the root edge
+	// and the bar's far side — for a monitor at Top=1440 docking top, the
+	// depth is 1440 + offset + barHeight, not barHeight. Only set when the
+	// band between the root edge and the bar is free of other monitors
+	// (GetMonitors picks DockEdge accordingly); otherwise the strut would
+	// carve up the monitor above/below instead.
+	strutOK := appBarMode && !isWayland() && edgeReservable(mon, lastMonitors, mon.DockEdge)
+	if strutOK && mon.DockEdge == "bottom" {
+		_, rootH := rootGeometry()
+		if rootH > 0 {
+			depth := rootH - (int(mon.Top) + mon.Height) + barHeight
+			strut := fmt.Sprintf("0,0,0,%d,0,0,0,0,0,0,%d,%d",
+				depth, mon.Left, mon.Left+int32(width))
+			_ = exec.Command("xprop", "-id", id, "-f", "_NET_WM_STRUT_PARTIAL", "32c",
+				"-set", "_NET_WM_STRUT_PARTIAL", strut).Run()
+			return
+		}
+	} else if strutOK {
+		depth := y + barHeight
 		strut := fmt.Sprintf("0,0,%d,0,0,0,0,0,%d,%d,0,0",
-			barHeight, mon.Left, mon.Left+int32(width))
+			depth, mon.Left, mon.Left+int32(width))
 		_ = exec.Command("xprop", "-id", id, "-f", "_NET_WM_STRUT_PARTIAL", "32c",
 			"-set", "_NET_WM_STRUT_PARTIAL", strut).Run()
-	} else {
-		_ = exec.Command("xprop", "-id", id, "-remove", "_NET_WM_STRUT_PARTIAL").Run()
+		return
 	}
+	_ = exec.Command("xprop", "-id", id, "-remove", "_NET_WM_STRUT_PARTIAL").Run()
 }
 
 func RemoveAppBar(hwnd uintptr) {
@@ -172,6 +190,21 @@ func SetOpacity(hwnd uintptr, opacity float64) {
 	id := fmt.Sprintf("0x%08x", uint32(hwnd))
 	_ = exec.Command("xprop", "-id", id, "-f", "_NET_WM_WINDOW_OPACITY", "32c",
 		"-set", "_NET_WM_WINDOW_OPACITY", strconv.FormatUint(uint64(alpha), 10)).Run()
+}
+
+// rootGeometry returns the root screen size as the bounding box of the last
+// monitor layout. (xdotool getdisplaygeometry is unreliable under XWayland —
+// it can report a single monitor's logical size instead of the root extent.)
+func rootGeometry() (w, h int) {
+	for _, m := range lastMonitors {
+		if r := int(m.Left) + widthPx(m); r > w {
+			w = r
+		}
+		if b := int(m.Top) + m.Height; b > h {
+			h = b
+		}
+	}
+	return w, h
 }
 
 // IsFullScreenActive: stub on Linux. The mon argument matches the Windows
