@@ -17,22 +17,40 @@ description: |
   Lightweight always-on-top desktop bar that displays Claude Code usage
   across multiple accounts with a retro terminal aesthetic.
 vendor: ClawdPanel
-homepage: https://github.com/anthropics/clawdpanel
+homepage: https://github.com/Eyalm321/clawdpanel
 license: MIT
 
-depends:
-  - libwebkit2gtk-4.0-37 | libwebkit2gtk-4.1-0
-  - libgtk-3-0
-  - wmctrl
-  - x11-utils    # provides xprop
-  - xdotool
-  - python3
-  - gstreamer1.0-plugins-base
-  - gstreamer1.0-plugins-good
-  - gstreamer1.0-plugins-bad
-
-recommends:
-  - nodejs       # required for the statusline command to run
+# Dependency names differ per distro family, so they live under
+# overrides (nfpm applies the matching set per output format).
+# The wails3 build links GTK4 + WebKitGTK 6.0 — not the GTK3 /
+# webkit2gtk-4.x stack of the old wails v2 builds.
+overrides:
+  deb:
+    depends:
+      - libwebkitgtk-6.0-4
+      - libgtk-4-1
+      - wmctrl
+      - x11-utils    # provides xprop
+      - xdotool
+      - python3
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-plugins-bad
+    recommends:
+      - nodejs       # required for the statusline command to run
+  rpm:
+    depends:
+      - webkitgtk6.0
+      - gtk4
+      - wmctrl
+      - xorg-x11-utils    # provides xprop
+      - xdotool
+      - python3
+      - gstreamer1-plugins-base
+      - gstreamer1-plugins-good
+      - gstreamer1-plugins-bad-free
+    recommends:
+      - nodejs       # required for the statusline command to run
 
 contents:
   - src: ./bin/clawdpanel
