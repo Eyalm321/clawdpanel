@@ -98,7 +98,12 @@ tasks:
 
   build:universal:
     summary: Builds darwin universal binary (arm64 + amd64)
-    deps:
+    # The arch builds run as sequential cmds, NOT parallel deps: each one
+    # rebuilds frontend/dist (vite empties its outDir on start), so running
+    # them concurrently races go:embed against the other arch's clean —
+    # "cannot embed directory frontend/dist: contains no embeddable files"
+    # (failed the v2.2.1 release; v2.2.0 happened to win the race).
+    cmds:
       - task: build
         vars:
           ARCH: amd64
@@ -107,7 +112,6 @@ tasks:
         vars:
           ARCH: arm64
           OUTPUT: "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
-    cmds:
       - task: '{{if eq OS "darwin"}}build:universal:lipo:native{{else}}build:universal:lipo:go{{end}}'
 
   build:universal:lipo:native:
