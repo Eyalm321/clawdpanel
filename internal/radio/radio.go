@@ -445,9 +445,17 @@ func (r *Resolver) resolveDirect(ctx context.Context, videoID string, forceRefre
 		return ResolvedTrack{}, fmt.Errorf("youtube: get video info for %s: %w", videoID, err)
 	}
 
-	// Livestream: HLS manifest is the playable URL and never expires by EOS.
-	if video.HLSManifestURL != "" {
-		track := ResolvedTrack{URL: video.HLSManifestURL, IsLive: true}
+	// Livestream: prefer the DASH manifest — its audio is a separate fMP4
+	// track. The HLS variants are video+audio muxed into MPEG-TS whose
+	// segments carry continuity-counter discontinuities at every boundary,
+	// audible as a click every segment (~2s) on quiet material. DASH is
+	// what YouTube's own player uses. HLS stays as the fallback.
+	if video.DASHManifestURL != "" || video.HLSManifestURL != "" {
+		url := video.DASHManifestURL
+		if url == "" {
+			url = video.HLSManifestURL
+		}
+		track := ResolvedTrack{URL: url, IsLive: true}
 		r.mu.Lock()
 		r.cache[videoID] = trackEntry{track: track, at: time.Now()}
 		r.mu.Unlock()
