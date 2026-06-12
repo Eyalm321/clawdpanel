@@ -62,6 +62,7 @@ type LinuxPlayer struct {
 	liveHint  bool // resolver says the next/current track is a livestream
 	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
 	preroll   bool // before the first settled PLAYING of the current track
+	prerolled bool // ASYNC_DONE received for the current track
 	confirmed bool // StatePlaying already reported for the current track
 	lastPos   C.gint64
 
@@ -140,16 +141,29 @@ func (p *LinuxPlayer) Play(url string) error {
 
 	C.set_playbin_uri(p.playbin, cURL)
 
-	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
+	// Preroll in PAUSED first (the gst-launch dance): going straight to
+	// PLAYING races the demuxer's initial segment event — DASH segments keep
+	// their original live-stream timestamps, and without the segment mapping
+	// settled the sink schedules them hours into the future: position
+	// advances, pure silence. monitorBus promotes to PLAYING on ASYNC_DONE /
+	// buffering-100%.
+	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
 	if ret == C.GST_STATE_CHANGE_FAILURE {
 		p.mu.Unlock()
-		return fmt.Errorf("failed to set GStreamer state to PLAYING")
+		return fmt.Errorf("failed to set GStreamer state to PAUSED for preroll")
 	}
 	// True live sources preroll with NO_PREROLL and must never be paused for
-	// buffering; everything else (including HLS) is managed in monitorBus.
+	// buffering; they go to PLAYING immediately.
 	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL || p.liveHint
+	if p.live {
+		if C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING) == C.GST_STATE_CHANGE_FAILURE {
+			p.mu.Unlock()
+			return fmt.Errorf("failed to set GStreamer state to PLAYING")
+		}
+	}
 	p.buffering = false
 	p.preroll = !p.live
+	p.prerolled = false
 	p.confirmed = false
 	p.lastPos = -1
 
@@ -239,7 +253,7 @@ func (p *LinuxPlayer) monitorBus() {
 			msg := C.gst_bus_timed_pop_filtered(
 				bus,
 				100*C.GST_MSECOND,
-				C.GST_MESSAGE_ERROR|C.GST_MESSAGE_EOS|C.GST_MESSAGE_STATE_CHANGED|C.GST_MESSAGE_BUFFERING,
+				C.GST_MESSAGE_ERROR|C.GST_MESSAGE_EOS|C.GST_MESSAGE_STATE_CHANGED|C.GST_MESSAGE_BUFFERING|C.GST_MESSAGE_ASYNC_DONE,
 			)
 			if msg == nil {
 				// No bus traffic this tick. Live DASH pipelines can stream
@@ -289,6 +303,21 @@ func (p *LinuxPlayer) monitorBus() {
 				// can auto-advance. Livestreams never reach EOS.
 				p.send(Event{State: StateEnded})
 
+			case C.GST_MESSAGE_ASYNC_DONE:
+				// Preroll complete. Play() leaves non-live pipelines in PAUSED;
+				// promote to PLAYING here unless a rebuffer is holding us back
+				// (the buffering handler resumes at 100% in that case).
+				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) {
+					p.mu.Lock()
+					p.prerolled = true
+					promote := p.playing && !p.buffering
+					p.mu.Unlock()
+					log.Printf("[audio] gst: ASYNC_DONE (promote=%v)", promote)
+					if promote {
+						C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
+					}
+				}
+
 			case C.GST_MESSAGE_BUFFERING:
 				// Network streams must sit in PAUSED until the buffer fills,
 				// then resume — without this the pipeline stalls in preroll
@@ -298,16 +327,24 @@ func (p *LinuxPlayer) monitorBus() {
 				C.gst_message_parse_buffering(msg, &percent)
 				p.mu.Lock()
 				live, wantPlaying, preroll := p.live, p.playing, p.preroll
+				prerolled := p.prerolled
 				p.buffering = preroll && percent < 100
 				p.mu.Unlock()
 				// Hold PAUSED only while the INITIAL buffer fills. Once the
 				// track is playing, re-pausing on every sub-100% dip turns
 				// network jitter into audible stutter — the queue absorbs
 				// dips on its own (see buffer-duration above).
+				// Promotion to PLAYING additionally waits for preroll to
+				// settle (ASYNC_DONE): going PLAYING mid-preroll races the
+				// demuxer's segment event and the sink schedules buffers at
+				// their raw media timestamps — silence (see Play).
+				if percent == 100 || percent%25 == 0 {
+					log.Printf("[audio] gst: buffering %d%% (live=%v preroll=%v prerolled=%v)", int(percent), live, preroll, prerolled)
+				}
 				if !live && preroll {
 					if percent < 100 {
 						C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
-					} else if wantPlaying {
+					} else if wantPlaying && prerolled {
 						C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
 					}
 				}
@@ -322,6 +359,9 @@ func (p *LinuxPlayer) monitorBus() {
 				p.mu.Lock()
 				buffering := p.buffering
 				p.mu.Unlock()
+				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) {
+					log.Printf("[audio] gst: playbin state %d->%d (pending %d, buffering=%v)", int(oldState), int(newState), int(pendingState), buffering)
+				}
 				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) && !buffering {
 					switch newState {
 					case C.GST_STATE_PLAYING:
@@ -337,6 +377,15 @@ func (p *LinuxPlayer) monitorBus() {
 					case C.GST_STATE_PAUSED:
 						if pendingState != C.GST_STATE_VOID_PENDING {
 							break // transitional preroll pause — not user-facing
+						}
+						p.mu.Lock()
+						wantPlaying := p.playing
+						p.mu.Unlock()
+						if wantPlaying {
+							// Settled PAUSED while the user wants playback: the
+							// preroll hold before promotion to PLAYING (see
+							// Play) — not user-facing either.
+							break
 						}
 						p.send(Event{State: StatePaused})
 					case C.GST_STATE_READY, C.GST_STATE_NULL:

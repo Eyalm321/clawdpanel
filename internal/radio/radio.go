@@ -662,22 +662,27 @@ var (
 	reLiveAttrs   = regexp.MustCompile(`\s*(yt:)?(minimumUpdatePeriod|timeShiftBufferDepth|availabilityStartTime|mpdRequestTime|mpdResponseTime|earliestMediaSequence)="[^"]*"`)
 	reSegDur      = regexp.MustCompile(`<S d="(\d+)"`)
 	rePeriodStart = regexp.MustCompile(`<Period start="PT[0-9.]+S"`)
-	rePTO         = regexp.MustCompile(`\s*presentationTimeOffset="\d+"`)
 	reVideoSet    = regexp.MustCompile(`(?s)<AdaptationSet[^>]*mimeType="video/[^"]*".*?</AdaptationSet>`)
 )
 
-// maxStaticSegments bounds how much of the DVR window the static manifest
-// exposes (~30min at 2s segments). Playback starts at the manifest's FIRST
-// segment; the oldest DVR segments expire off the CDN almost immediately as
-// the window slides, so exposing the whole window makes playback start on
-// dead segments (silent gaps). A fresh ~30min tail starts on valid content
-// and still EOSes into a re-resolved fresh window.
-const maxStaticSegments = 900
+// maxStaticWindow bounds how much of the DVR window the static manifest
+// exposes (in segment-timescale units, i.e. ms — timescale is 1000 by
+// observation). Playback starts at the manifest's FIRST segment; the oldest
+// DVR segments expire off the CDN almost immediately as the window slides,
+// so exposing the whole window makes playback start on dead segments (silent
+// gaps). A fresh ~30min tail starts on valid content and still EOSes into a
+// re-resolved fresh window. Bounded by time, not count: segment duration
+// varies per stream (2s on some, 5s on others).
+const maxStaticWindowMs = 30 * 60 * 1000
 
 var (
 	reSegURL       = regexp.MustCompile(`<SegmentURL [^>]*/>`)
 	reSEntry       = regexp.MustCompile(`<S d="\d+"[^>]*/>`)
 	reSegListBlock = regexp.MustCompile(`(?s)<SegmentList[^>]*>.*?</SegmentList>`)
+	reSegListOpen  = regexp.MustCompile(`<SegmentList[^>]*>`)
+	reStartNumber  = regexp.MustCompile(`startNumber="\d+"`)
+	rePTOAttr      = regexp.MustCompile(`presentationTimeOffset="\d+"`)
+	reInt          = regexp.MustCompile(`\d+`)
 )
 
 // staticizeLiveMPD rewrites YouTube's dynamic live MPD into a static one
@@ -690,32 +695,87 @@ func staticizeLiveMPD(body []byte) ([]byte, error) {
 	out := bytes.Replace(body, []byte(`type="dynamic"`), []byte(`type="static"`), 1)
 	out = reLiveAttrs.ReplaceAll(out, nil)
 	out = rePeriodStart.ReplaceAll(out, []byte("<Period"))
-	out = rePTO.ReplaceAll(out, nil)
 	out = reVideoSet.ReplaceAll(out, nil)
 
-	// Keep only the newest maxStaticSegments of the timeline and of every
-	// remaining SegmentList — trimmed per list (the audio AdaptationSet can
-	// carry several Representations, each with its own full list).
-	out = reSegListBlock.ReplaceAllFunc(out, func(block []byte) []byte {
-		block = trimLeading(block, reSEntry, maxStaticSegments)
-		return trimLeading(block, reSegURL, maxStaticSegments)
-	})
-
-	durs := reSegDur.FindAllSubmatch(out, -1)
-	if len(durs) == 0 {
+	// The audio AdaptationSet carries ONE attributed SegmentList (startNumber,
+	// presentationTimeOffset, timescale + the <S> timeline) and one bare
+	// SegmentList of <SegmentURL>s per Representation. Trim each list to the
+	// freshest ~maxStaticWindowMs, then shift startNumber and
+	// presentationTimeOffset forward by the dropped lead. The PTO is what maps
+	// the segments' fMP4 tfdt timestamps (the live stream's full media time,
+	// hundreds of hours in) back to presentation time 0 — without it the sink
+	// schedules all audio that far in the future: position advances, pure
+	// silence. The timeline's own <S d> values give the exact media duration
+	// of the dropped lead (segment durations vary slightly, so summing beats
+	// firstSegment×nominalDuration).
+	sEntries := reSEntry.FindAll(out, -1)
+	if len(sEntries) == 0 {
 		return nil, fmt.Errorf("MPD has no segment timeline")
 	}
-	var totalMs int64
-	for _, d := range durs {
+	segMs := int64(0)
+	if d := reSegDur.FindSubmatch(out); d != nil {
+		segMs, _ = strconv.ParseInt(string(d[1]), 10, 64)
+	}
+	if segMs <= 0 {
+		return nil, fmt.Errorf("MPD has no segment duration")
+	}
+	keep := int(maxStaticWindowMs / segMs)
+	if keep < 1 {
+		keep = 1
+	}
+	if keep > len(sEntries) {
+		keep = len(sEntries)
+	}
+
+	var droppedMs, keptMs int64
+	for i, s := range sEntries {
+		d := reSegDur.FindSubmatch(s)
+		if d == nil {
+			continue
+		}
 		ms, err := strconv.ParseInt(string(d[1]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("parse segment duration: %w", err)
 		}
-		totalMs += ms
+		if i < len(sEntries)-keep {
+			droppedMs += ms
+		} else {
+			keptMs += ms
+		}
 	}
+
+	out = reSegListBlock.ReplaceAllFunc(out, func(block []byte) []byte {
+		block = trimLeading(block, reSEntry, keep)
+		return trimLeading(block, reSegURL, keep)
+	})
+
+	// Shift the attributed SegmentList tag to the trimmed window's start.
+	out = reSegListOpen.ReplaceAllFunc(out, func(open []byte) []byte {
+		open = replaceInt64Attr(open, reStartNumber, "startNumber", func(v int64) int64 {
+			return v + int64(len(sEntries)-keep)
+		})
+		open = replaceInt64Attr(open, rePTOAttr, "presentationTimeOffset", func(v int64) int64 {
+			return v + droppedMs
+		})
+		return open
+	})
+
 	out = bytes.Replace(out, []byte("<MPD "),
-		[]byte(fmt.Sprintf(`<MPD mediaPresentationDuration="PT%.3fS" `, float64(totalMs)/1000)), 1)
+		[]byte(fmt.Sprintf(`<MPD mediaPresentationDuration="PT%.3fS" `, float64(keptMs)/1000)), 1)
 	return out, nil
+}
+
+// replaceInt64Attr rewrites the integer attribute matched by re inside tag by
+// applying f to its current value. Tags without the attribute pass unchanged.
+func replaceInt64Attr(tag []byte, re *regexp.Regexp, name string, f func(int64) int64) []byte {
+	return re.ReplaceAllFunc(tag, func(attr []byte) []byte {
+		m := reInt.Find(attr)
+		v, err := strconv.ParseInt(string(m), 10, 64)
+		if err != nil {
+			return attr
+		}
+		return []byte(fmt.Sprintf(`%s="%d"`, name, f(v)))
+	})
 }
 
 // trimLeading removes all but the last keep matches of re from body.
