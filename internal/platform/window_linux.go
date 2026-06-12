@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Linux v1: Wails handles frameless + always-on-top via its built-in options
@@ -26,31 +27,43 @@ var (
 )
 
 func isWayland() bool {
+	// GDK_BACKEND=x11 means we're an X11/XWayland client even when the
+	// session is Wayland (main.go forces this on Linux) — the X11 tooling
+	// (wmctrl/xprop) then operates on our window normally.
+	if strings.Contains(os.Getenv("GDK_BACKEND"), "x11") {
+		return false
+	}
 	return os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 // findWindowID locates our X11 window ID via `wmctrl -lp` matching our PID.
+// The window must already be mapped (shown) — wmctrl doesn't list hidden
+// windows — so we retry briefly to ride out the show → map round-trip.
 func findWindowID() uint32 {
 	winIDOnce.Do(func() {
-		out, err := exec.Command("wmctrl", "-lp").Output()
-		if err != nil {
-			log.Printf("platform: wmctrl unavailable (%v); window-specific ops disabled", err)
-			return
-		}
 		pid := strconv.Itoa(os.Getpid())
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 5 {
-				continue
+		for attempt := 0; attempt < 10; attempt++ {
+			out, err := exec.Command("wmctrl", "-lp").Output()
+			if err != nil {
+				log.Printf("platform: wmctrl unavailable (%v); window-specific ops disabled", err)
+				return
 			}
-			// fields: 0x<id> desktop pid host title...
-			if fields[2] == pid {
-				if id, err := strconv.ParseUint(strings.TrimPrefix(fields[0], "0x"), 16, 32); err == nil {
-					winID = uint32(id)
-					return
+			for _, line := range strings.Split(string(out), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 5 {
+					continue
+				}
+				// fields: 0x<id> desktop pid host title...
+				if fields[2] == pid {
+					if id, err := strconv.ParseUint(strings.TrimPrefix(fields[0], "0x"), 16, 32); err == nil {
+						winID = uint32(id)
+						return
+					}
 				}
 			}
+			time.Sleep(200 * time.Millisecond)
 		}
+		log.Printf("platform: X11 window for PID %s not found after retries", pid)
 	})
 	return winID
 }
