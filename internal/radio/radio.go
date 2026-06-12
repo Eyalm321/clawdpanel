@@ -8,6 +8,7 @@
 package radio
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +70,18 @@ type Resolver struct {
 	byteCacheMu sync.Mutex
 	byteCache   map[string]*videoCache
 	byteOrder   []string
+
+	// liveDash maps a live videoID to its upstream DASH manifest URL plus a
+	// briefly-cached rewritten body: dashdemux refetches dynamic manifests
+	// every minimumUpdatePeriod (2s), and each upstream fetch is ~1MB.
+	liveDashMu   sync.Mutex
+	liveDash     map[string]string
+	liveDashBody map[string]cachedManifest
+}
+
+type cachedManifest struct {
+	body []byte
+	at   time.Time
 }
 
 func New() *Resolver {
@@ -75,6 +89,8 @@ func New() *Resolver {
 		cache:         map[string]trackEntry{},
 		playlistCache: map[string]playlistEntry{},
 		byteCache:     map[string]*videoCache{},
+		liveDash:      map[string]string{},
+		liveDashBody:  map[string]cachedManifest{},
 	}
 
 	// Start local proxy server to stream YouTube VODs safely (bypasses 403 Forbidden).
@@ -103,6 +119,10 @@ func (r *Resolver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	videoID := req.URL.Query().Get("id")
 	if videoID == "" {
 		http.Error(w, "missing video id", http.StatusBadRequest)
+		return
+	}
+	if req.URL.Path == "/dash" {
+		r.serveLiveManifest(w, req, videoID)
 		return
 	}
 	vc := r.getOrStartCache(videoID)
@@ -263,7 +283,7 @@ func (r *Resolver) getOrStartCache(videoID string) *videoCache {
 // even a 70-minute mix finish caching in seconds — after which seeks are instant.
 const (
 	dlSegments   = 8
-	dlMinSegment = 1 << 20                // 1 MiB: don't over-split small files
+	dlMinSegment = 1 << 20                 // 1 MiB: don't over-split small files
 	dlStartDelay = 1500 * time.Millisecond // head start for playback before we fan out
 )
 
@@ -449,13 +469,33 @@ func (r *Resolver) resolveDirect(ctx context.Context, videoID string, forceRefre
 	// track. The HLS variants are video+audio muxed into MPEG-TS whose
 	// segments carry continuity-counter discontinuities at every boundary,
 	// audible as a click every segment (~2s) on quiet material. DASH is
-	// what YouTube's own player uses. HLS stays as the fallback.
-	if video.DASHManifestURL != "" || video.HLSManifestURL != "" {
-		url := video.DASHManifestURL
-		if url == "" {
-			url = video.HLSManifestURL
+	// what YouTube's own player uses.
+	//
+	// The manifest goes through our local proxy, which rewrites the dynamic
+	// live MPD into a STATIC one covering the DVR window (~2h), with video
+	// AdaptationSets stripped. GStreamer's live-MPD handling chokes on
+	// YouTube's manifests (the availabilityStartTime doesn't anchor the
+	// Period@start offset, so the computed live period excludes the
+	// present), while its static path is rock solid. The track is therefore
+	// reported as NOT live: playback hits EOS at the window's end and the
+	// station player auto-advances into a freshly resolved window. HLS
+	// stays as the fallback.
+	if video.DASHManifestURL != "" && r.port != 0 {
+		r.liveDashMu.Lock()
+		r.liveDash[videoID] = video.DASHManifestURL
+		delete(r.liveDashBody, videoID)
+		r.liveDashMu.Unlock()
+		track := ResolvedTrack{
+			URL:    fmt.Sprintf("http://127.0.0.1:%d/dash?id=%s", r.port, url.QueryEscape(videoID)),
+			IsLive: false,
 		}
-		track := ResolvedTrack{URL: url, IsLive: true}
+		r.mu.Lock()
+		r.cache[videoID] = trackEntry{track: track, at: time.Now()}
+		r.mu.Unlock()
+		return track, nil
+	}
+	if video.HLSManifestURL != "" {
+		track := ResolvedTrack{URL: video.HLSManifestURL, IsLive: true}
 		r.mu.Lock()
 		r.cache[videoID] = trackEntry{track: track, at: time.Now()}
 		r.mu.Unlock()
@@ -549,4 +589,104 @@ func (r *Resolver) ExpandPlaylist(ctx context.Context, playlistID string, forceR
 	}
 	r.playlistCache[playlistID] = playlistEntry{ids: ids, at: time.Now()}
 	return append([]string(nil), ids...), nil
+}
+
+// serveLiveManifest proxies a live stream's DASH manifest, repairing it for
+// GStreamer. YouTube's MPD carries an availabilityStartTime that does NOT
+// anchor the Period@start offset (their player ignores it; GStreamer computes
+// period coverage from it and concludes the live period is not active). The
+// true epoch of the segment list is yt:segmentIngestTime, so we rewrite
+// availabilityStartTime = segmentIngestTime - Period@start. The video
+// AdaptationSets are dropped while we're here — the bar is audio-only.
+func (r *Resolver) serveLiveManifest(w http.ResponseWriter, req *http.Request, videoID string) {
+	r.liveDashMu.Lock()
+	upstream := r.liveDash[videoID]
+	if c, ok := r.liveDashBody[videoID]; ok && time.Since(c.at) < 1500*time.Millisecond {
+		body := c.body
+		r.liveDashMu.Unlock()
+		w.Header().Set("Content-Type", "application/dash+xml")
+		_, _ = w.Write(body)
+		return
+	}
+	r.liveDashMu.Unlock()
+	if upstream == "" {
+		http.Error(w, "unknown live stream", http.StatusNotFound)
+		return
+	}
+
+	fetch := func(u string) ([]byte, int, error) {
+		resp, err := http.Get(u)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		return b, resp.StatusCode, err
+	}
+
+	body, status, err := fetch(upstream)
+	if err != nil || status != http.StatusOK {
+		// Upstream manifest URLs expire (~6h) — re-resolve once and retry.
+		ctx, cancel := context.WithTimeout(req.Context(), 15*time.Second)
+		defer cancel()
+		video, rerr := r.client.GetVideoContext(ctx, videoID)
+		if rerr != nil || video.DASHManifestURL == "" {
+			http.Error(w, "manifest unavailable", http.StatusBadGateway)
+			return
+		}
+		r.liveDashMu.Lock()
+		r.liveDash[videoID] = video.DASHManifestURL
+		r.liveDashMu.Unlock()
+		if body, status, err = fetch(video.DASHManifestURL); err != nil || status != http.StatusOK {
+			http.Error(w, "manifest unavailable", http.StatusBadGateway)
+			return
+		}
+	}
+
+	fixed, err := staticizeLiveMPD(body)
+	if err != nil {
+		log.Printf("[radio] live MPD rewrite failed (%v); serving original", err)
+		fixed = body
+	}
+	r.liveDashMu.Lock()
+	r.liveDashBody[videoID] = cachedManifest{body: fixed, at: time.Now()}
+	r.liveDashMu.Unlock()
+	w.Header().Set("Content-Type", "application/dash+xml")
+	_, _ = w.Write(fixed)
+}
+
+var (
+	reLiveAttrs   = regexp.MustCompile(`\s*(yt:)?(minimumUpdatePeriod|timeShiftBufferDepth|availabilityStartTime|mpdRequestTime|mpdResponseTime|earliestMediaSequence)="[^"]*"`)
+	reSegDur      = regexp.MustCompile(`<S d="(\d+)"`)
+	rePeriodStart = regexp.MustCompile(`<Period start="PT[0-9.]+S"`)
+	rePTO         = regexp.MustCompile(`\s*presentationTimeOffset="\d+"`)
+	reVideoSet    = regexp.MustCompile(`(?s)<AdaptationSet[^>]*mimeType="video/[^"]*".*?</AdaptationSet>`)
+)
+
+// staticizeLiveMPD rewrites YouTube's dynamic live MPD into a static one
+// covering the whole DVR window (segment timescale is 1000 by observation).
+func staticizeLiveMPD(body []byte) ([]byte, error) {
+	if !bytes.Contains(body, []byte(`type="dynamic"`)) {
+		return nil, fmt.Errorf("MPD is not dynamic")
+	}
+	durs := reSegDur.FindAllSubmatch(body, -1)
+	if len(durs) == 0 {
+		return nil, fmt.Errorf("MPD has no segment timeline")
+	}
+	var totalMs int64
+	for _, d := range durs {
+		ms, err := strconv.ParseInt(string(d[1]), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse segment duration: %w", err)
+		}
+		totalMs += ms
+	}
+	out := bytes.Replace(body, []byte(`type="dynamic"`), []byte(`type="static"`), 1)
+	out = reLiveAttrs.ReplaceAll(out, nil)
+	out = bytes.Replace(out, []byte("<MPD "),
+		[]byte(fmt.Sprintf(`<MPD mediaPresentationDuration="PT%.3fS" `, float64(totalMs)/1000)), 1)
+	out = rePeriodStart.ReplaceAll(out, []byte("<Period"))
+	out = rePTO.ReplaceAll(out, nil)
+	out = reVideoSet.ReplaceAll(out, nil)
+	return out, nil
 }
