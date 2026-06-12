@@ -194,6 +194,20 @@ async function updateMonitorDisplay() {
 
 async function init() {
   try {
+    // Linux/GTK: the native tooltip surface spawns under the pointer and
+    // storms :hover with enter/leave cycles (visible as rapid hover-style
+    // flicker). Strip title attributes and keep them stripped — the
+    // observer catches ones set later (e.g. the play button's Play/Pause).
+    if (navigator.userAgent.includes('Linux')) {
+      document.querySelectorAll('[title]').forEach(e => e.removeAttribute('title'));
+      new MutationObserver(muts => {
+        for (const m of muts) {
+          if (m.target.getAttribute && m.target.getAttribute('title') !== null) {
+            m.target.removeAttribute('title');
+          }
+        }
+      }).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['title'] });
+    }
     initTheme();
     cfg      = await GetConfig();
     monitors = await GetMonitors();

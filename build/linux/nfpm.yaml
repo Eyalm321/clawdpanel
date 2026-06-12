@@ -51,6 +51,9 @@ overrides:
       - gstreamer1-plugins-bad-free
     recommends:
       - nodejs       # required for the statusline command to run
+      # GNOME has no built-in tray; the AppIndicator extension restores it
+      # (user still needs to enable it / re-login).
+      - gnome-shell-extension-appindicator
 
 contents:
   - src: ./bin/clawdpanel

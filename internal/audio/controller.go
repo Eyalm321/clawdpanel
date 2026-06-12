@@ -136,6 +136,9 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 				}
 				c.activeURL = fresh.URL
 				c.curIsLive = fresh.IsLive
+				if lh, ok := c.player.(interface{ SetLiveHint(bool) }); ok {
+					lh.SetLiveHint(fresh.IsLive)
+				}
 				player := c.player
 				c.mu.Unlock()
 
@@ -198,6 +201,10 @@ func (c *Controller) PlayVideo(ctx context.Context, videoID string) error {
 	log.Printf("[audio] Resolved URL (live=%v): %s. Handing over to native player...", track.IsLive, track.URL)
 	c.activeURL = track.URL
 	c.curIsLive = track.IsLive
+	if lh, ok := c.player.(interface{ SetLiveHint(bool) }); ok {
+		// Live streams must not be paused for buffering (see SetLiveHint).
+		lh.SetLiveHint(track.IsLive)
+	}
 	if err := c.player.Play(track.URL); err != nil {
 		log.Printf("[audio] Player.Play failed: %v", err)
 		c.send(Event{State: StateError, VideoID: videoID, Err: err.Error()})
