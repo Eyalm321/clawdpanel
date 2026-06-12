@@ -207,9 +207,41 @@ func rootGeometry() (w, h int) {
 	return w, h
 }
 
-// IsFullScreenActive: stub on Linux. The mon argument matches the Windows
-// signature (which scopes detection to the bar's display) but is unused here.
-func IsFullScreenActive(MonitorInfo) bool { return false }
+// IsFullScreenActive reports whether the currently focused window is
+// fullscreen on the given monitor (the bar's display), mirroring the Windows
+// behavior: the bar collapses while something is fullscreen there and
+// re-expands when it ends. Detection is via _NET_ACTIVE_WINDOW +
+// _NET_WM_STATE_FULLSCREEN, so it sees X11/XWayland clients; Wayland-native
+// fullscreen windows are invisible to X tooling and go undetected (no public
+// compositor API exposes them on GNOME).
+func IsFullScreenActive(mon MonitorInfo) bool {
+	out, err := exec.Command("xprop", "-root", "_NET_ACTIVE_WINDOW").Output()
+	if err != nil {
+		return false
+	}
+	str := string(out)
+	idx := strings.LastIndex(str, "0x")
+	if idx < 0 {
+		return false
+	}
+	winStr := strings.TrimSpace(str[idx:])
+	id, err := strconv.ParseUint(strings.TrimPrefix(winStr, "0x"), 16, 32)
+	if err != nil || id == 0 {
+		return false
+	}
+	state, err := exec.Command("xprop", "-id", winStr, "_NET_WM_STATE").Output()
+	if err != nil || !strings.Contains(string(state), "_NET_WM_STATE_FULLSCREEN") {
+		return false
+	}
+	// Scope to the bar's monitor: the fullscreen window's center must be on it.
+	l, t, w, h := GetWindowSize(uintptr(id))
+	if w == 0 && h == 0 {
+		return false
+	}
+	cx, cy := l+w/2, t+h/2
+	return cx >= int(mon.Left) && cx < int(mon.Left)+widthPx(mon) &&
+		cy >= int(mon.Top) && cy < int(mon.Top)+mon.Height
+}
 
 // AutoHideSupported: the slide/hide primitives below are wired up via xdotool,
 // so the reveal machine's hover auto-hide and pin toggle work on Linux.
