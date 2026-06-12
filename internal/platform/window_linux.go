@@ -88,6 +88,23 @@ func ApplyBarStyles(hwnd uintptr) {
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-b", "add,above").Run()
 }
 
+// gnomeTopBarOffset returns how far below the monitor's top edge the bar must
+// sit to clear GNOME Shell's panel. The panel lives on the primary monitor and
+// is compositor chrome — it draws over X docks regardless of _NET_WM_STATE_ABOVE,
+// and (being a Wayland-native surface) can't be measured via X tooling, so we
+// use its default 1×-scale height. CLAWDPANEL_TOP_OFFSET overrides.
+func gnomeTopBarOffset(mon MonitorInfo) int {
+	if v := os.Getenv("CLAWDPANEL_TOP_OFFSET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	if !mon.IsPrimary || !strings.Contains(strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP")), "gnome") {
+		return 0
+	}
+	return 32
+}
+
 func DockToMonitor(hwnd uintptr, mon MonitorInfo, barHeight int, appBarMode bool) {
 	if hwnd == 0 {
 		return
@@ -97,8 +114,9 @@ func DockToMonitor(hwnd uintptr, mon MonitorInfo, barHeight int, appBarMode bool
 	if width == 0 {
 		width = mon.Width
 	}
+	top := int(mon.Top) + gnomeTopBarOffset(mon)
 	// wmctrl -e gravity,x,y,w,h. Gravity 0 = default.
-	geom := fmt.Sprintf("0,%d,%d,%d,%d", mon.Left, mon.Top, width, barHeight)
+	geom := fmt.Sprintf("0,%d,%d,%d,%d", mon.Left, top, width, barHeight)
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
 	if appBarMode && !isWayland() {
 		// _NET_WM_STRUT_PARTIAL: left, right, top, bottom, then four ranges.
