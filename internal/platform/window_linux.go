@@ -214,7 +214,33 @@ func rootGeometry() (w, h int) {
 // _NET_WM_STATE_FULLSCREEN, so it sees X11/XWayland clients; Wayland-native
 // fullscreen windows are invisible to X tooling and go undetected (no public
 // compositor API exposes them on GNOME).
+// fullScreenCache throttles the xprop/xdotool round-trips: the reveal machine
+// calls this every 80ms tick, but fullscreen state changes on a human
+// timescale. Three subprocess spawns per tick starve the poll loop and cause
+// intermittent failures.
+var (
+	fullScreenMu      sync.Mutex
+	fullScreenAt      time.Time
+	fullScreenLastMon int = -1
+	fullScreenLast    bool
+)
+
 func IsFullScreenActive(mon MonitorInfo) bool {
+	fullScreenMu.Lock()
+	if mon.Index == fullScreenLastMon && time.Since(fullScreenAt) < time.Second {
+		v := fullScreenLast
+		fullScreenMu.Unlock()
+		return v
+	}
+	fullScreenMu.Unlock()
+	v := isFullScreenActiveUncached(mon)
+	fullScreenMu.Lock()
+	fullScreenAt, fullScreenLastMon, fullScreenLast = time.Now(), mon.Index, v
+	fullScreenMu.Unlock()
+	return v
+}
+
+func isFullScreenActiveUncached(mon MonitorInfo) bool {
 	out, err := exec.Command("xprop", "-root", "_NET_ACTIVE_WINDOW").Output()
 	if err != nil {
 		return false
@@ -247,12 +273,25 @@ func IsFullScreenActive(mon MonitorInfo) bool {
 // so the reveal machine's hover auto-hide and pin toggle work on Linux.
 func AutoHideSupported() bool { return true }
 
+// lastCursor caches the last successful cursor read. The reveal machine polls
+// at 12.5Hz; a transient xdotool failure must not read as "cursor gone" — that
+// collapses the bar for a tick and re-expands it, flickering hover state under
+// a stationary pointer.
+var (
+	lastCursorMu sync.Mutex
+	lastCursorX  = -1
+	lastCursorY  = -1
+)
+
 // GetCursorPos reads the root-relative cursor position via xdotool. Returns
-// (-1, -1) — the reveal machine's "no cursor source" sentinel — on failure.
+// the last known position on transient failure; (-1, -1) only before the
+// first successful read (the reveal machine's "no cursor source" sentinel).
 func GetCursorPos() (int, int) {
 	out, err := exec.Command("xdotool", "getmouselocation", "--shell").Output()
+	lastCursorMu.Lock()
+	defer lastCursorMu.Unlock()
 	if err != nil {
-		return -1, -1
+		return lastCursorX, lastCursorY
 	}
 	x, y := -1, -1
 	for _, line := range strings.Split(string(out), "\n") {
@@ -267,7 +306,10 @@ func GetCursorPos() (int, int) {
 			}
 		}
 	}
-	return x, y
+	if x >= 0 && y >= 0 {
+		lastCursorX, lastCursorY = x, y
+	}
+	return lastCursorX, lastCursorY
 }
 
 // ResetDwmFrame is a Windows-only concept; no-op elsewhere.
