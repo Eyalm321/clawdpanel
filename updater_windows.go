@@ -12,6 +12,23 @@ import (
 	"syscall"
 )
 
+// selectUpdateAsset picks the Windows NSIS installer from the release assets.
+func selectUpdateAsset(assets []releaseAsset) string {
+	for _, asset := range assets {
+		lowerName := strings.ToLower(asset.Name)
+		if strings.Contains(lowerName, "windows") && strings.HasSuffix(lowerName, ".exe") {
+			return asset.BrowserDownloadURL
+		}
+	}
+	// Fallback to first .exe asset if windows is not explicitly in the name
+	for _, asset := range assets {
+		if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
+			return asset.BrowserDownloadURL
+		}
+	}
+	return ""
+}
+
 func resolveRelaunchPath(currentPath string) string {
 	isDev := Version == "dev" || strings.Contains(strings.ToLower(currentPath), "claudebar")
 

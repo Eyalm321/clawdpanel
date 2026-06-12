@@ -486,6 +486,12 @@ const (
 	releasesPageURL = "https://github.com/Eyalm321/clawdpanel/releases/latest"
 )
 
+// releaseAsset is one downloadable file of a GitHub release.
+type releaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
 func isNewerVersion(latest, current string) bool {
 	if current == "dev" {
 		return true
@@ -582,10 +588,7 @@ func (a *App) CheckForUpdates() UpdateCheckResult {
 	var payload struct {
 		TagName string `json:"tag_name"`
 		Body    string `json:"body"`
-		Assets  []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
+		Assets  []releaseAsset `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		res.Error = "failed to parse server response"
@@ -594,23 +597,11 @@ func (a *App) CheckForUpdates() UpdateCheckResult {
 
 	res.Changelog = payload.Body
 
-	// Find Windows Setup installer asset
-	for _, asset := range payload.Assets {
-		lowerName := strings.ToLower(asset.Name)
-		if strings.Contains(lowerName, "windows") && strings.HasSuffix(lowerName, ".exe") {
-			res.DownloadURL = asset.BrowserDownloadURL
-			break
-		}
-	}
-	// Fallback to first .exe asset if windows is not explicitly in the name
-	if res.DownloadURL == "" {
-		for _, asset := range payload.Assets {
-			if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
-				res.DownloadURL = asset.BrowserDownloadURL
-				break
-			}
-		}
-	}
+	// Pick the installer asset for this platform and install flavor
+	// (updater_<platform>.go). Empty means in-place update isn't possible
+	// here (e.g. a manually-installed binary or dev build) — the update
+	// window then offers the releases page instead.
+	res.DownloadURL = selectUpdateAsset(payload.Assets)
 
 	res.Latest = strings.TrimPrefix(strings.TrimSpace(payload.TagName), "v")
 	cur := strings.TrimPrefix(strings.TrimSpace(Version), "v")
@@ -675,8 +666,13 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 func (a *App) InstallUpdate(downloadURL string) error {
 	log.Printf("[Updater] Starting seamless update download from: %s", downloadURL)
 
-	tempDir := os.TempDir()
-	tempInstallerPath := filepath.Join(tempDir, "ClawdPanel-setup-temp.exe")
+	// Keep the asset's own name (sanitized): the platform installer dispatches
+	// on the extension (.exe / .rpm / .deb / .AppImage).
+	assetName := filepath.Base(strings.Split(downloadURL, "?")[0])
+	if assetName == "." || assetName == "/" || assetName == "" {
+		return fmt.Errorf("cannot derive installer name from URL")
+	}
+	tempInstallerPath := filepath.Join(os.TempDir(), "clawdpanel-update-"+assetName)
 
 	resp, err := http.Get(downloadURL)
 	if err != nil {

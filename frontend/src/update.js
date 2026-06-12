@@ -1,4 +1,4 @@
-import { Window, Events } from '@wailsio/runtime';
+import { Window, Events, Browser } from '@wailsio/runtime';
 import { applyTheme } from './settings/shell.js';
 import { GetLastUpdateResult, InstallUpdate } from '../bindings/clawdpanel/app.js';
 
@@ -17,8 +17,16 @@ function updateProgressUI(pct, downloaded, total) {
 }
 
 async function startUpdate() {
-  if (!updateInfo || !updateInfo.downloadUrl) return;
-  
+  if (!updateInfo) return;
+
+  // No in-place installer for this install (manual binary, dev build,
+  // macOS): hand off to the releases page instead.
+  if (!updateInfo.downloadUrl) {
+    try { await Browser.OpenURL(updateInfo.url); } catch (e) { console.error('open releases failed', e); }
+    closeWindow();
+    return;
+  }
+
   // Hide details, show progress
   document.getElementById('panel-details').style.display = 'none';
   document.getElementById('panel-progress').style.display = 'flex';
@@ -49,6 +57,9 @@ async function init() {
       document.getElementById('val-current').textContent = 'v' + updateInfo.current;
       document.getElementById('val-latest').textContent = 'v' + updateInfo.latest;
       document.getElementById('val-changelog').textContent = updateInfo.changelog || 'No release notes provided.';
+      if (!updateInfo.downloadUrl) {
+        document.getElementById('btn-update').textContent = 'OPEN DOWNLOAD PAGE';
+      }
     }
   } catch (err) {
     console.error('Failed to get update info:', err);
