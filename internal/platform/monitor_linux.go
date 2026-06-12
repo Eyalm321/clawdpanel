@@ -4,10 +4,28 @@ package platform
 
 import (
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+// gnomePanelOffset returns the height of GNOME Shell's top panel for the
+// primary monitor (where it lives). The panel is compositor chrome: it draws
+// over X11 docks regardless of stacking, and as a Wayland-native surface it
+// can't be measured via X tooling — so we use its default 1×-scale height.
+// CLAWDPANEL_TOP_OFFSET overrides for other scales/shell themes.
+func gnomePanelOffset(isPrimary bool) int {
+	if v := os.Getenv("CLAWDPANEL_TOP_OFFSET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	if !isPrimary || !strings.Contains(strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP")), "gnome") {
+		return 0
+	}
+	return 32
+}
 
 // GetMonitors parses `xrandr --listmonitors` output. Example line:
 //
@@ -51,15 +69,16 @@ func GetMonitors() []MonitorInfo {
 			continue
 		}
 		monitors = append(monitors, MonitorInfo{
-			Index:     idx,
-			Left:      int32(x),
-			Top:       int32(y),
-			Width:     w,
-			Height:    h,
-			PhysWidth: w,
-			DpiScale:  1.0,
-			IsPrimary: isPrimary,
-			Name:      name,
+			Index:         idx,
+			Left:          int32(x),
+			Top:           int32(y),
+			Width:         w,
+			Height:        h,
+			PhysWidth:     w,
+			DpiScale:      1.0,
+			IsPrimary:     isPrimary,
+			Name:          name,
+			WorkTopOffset: gnomePanelOffset(isPrimary),
 		})
 	}
 	if len(monitors) == 0 {

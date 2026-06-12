@@ -51,8 +51,14 @@ $bag = @{}
 $settings.PSObject.Properties | ForEach-Object { $bag[$_.Name] = $_.Value }
 
 if ($Mode -eq 'install') {
-    $bag['statuslineCommand'] = $StatuslineCommand
+    # "statusLine" is the key Claude Code actually reads; older installs wrote
+    # the nonexistent "statuslineCommand" (cleaned up on both paths).
+    $bag['statusLine'] = @{ type = 'command'; command = $StatuslineCommand }
+    $bag.Remove('statuslineCommand') | Out-Null
 } else {
+    if ($bag['statusLine'] -is [hashtable] -or $bag['statusLine'] -is [pscustomobject]) {
+        if ("$($bag['statusLine'].command)" -like '*rate_limits.json*') { $bag.Remove('statusLine') | Out-Null }
+    }
     $bag.Remove('statuslineCommand') | Out-Null
 }
 

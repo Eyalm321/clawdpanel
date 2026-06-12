@@ -56,7 +56,10 @@ if os.path.exists(path):
         sys.exit(0)
 
 if mode == "install":
-    settings["statuslineCommand"] = STATUSLINE_CMD
+    # "statusLine" is the key Claude Code actually reads; older installs wrote
+    # the nonexistent "statuslineCommand" (cleaned up on both paths).
+    settings["statusLine"] = {"type": "command", "command": STATUSLINE_CMD}
+    settings.pop("statuslineCommand", None)
 elif mode == "uninstall":
     settings.pop("statuslineCommand", None)
 

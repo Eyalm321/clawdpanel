@@ -54,8 +54,14 @@ if os.path.exists(path):
         sys.exit(0)
 
 if mode == "install":
-    settings["statuslineCommand"] = STATUSLINE_CMD
+    # "statusLine" is the key Claude Code actually reads; older installs wrote
+    # the nonexistent "statuslineCommand" (cleaned up on both paths).
+    settings["statusLine"] = {"type": "command", "command": STATUSLINE_CMD}
+    settings.pop("statuslineCommand", None)
 elif mode == "uninstall":
+    sl = settings.get("statusLine")
+    if isinstance(sl, dict) and "rate_limits.json" in str(sl.get("command", "")):
+        settings.pop("statusLine", None)
     settings.pop("statuslineCommand", None)
 
 tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".settings.", suffix=".tmp")
