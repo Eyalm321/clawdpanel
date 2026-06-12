@@ -28,6 +28,9 @@ static void set_playbin_volume(GstElement* playbin, double volume) {
 // also require codecs Fedora doesn't ship (H.264).
 static void set_playbin_audio_only(GstElement* playbin) {
 	g_object_set(playbin, "flags", (1 << 1) | (1 << 4), NULL);
+	// A generous buffer window so live radio rides out network jitter
+	// instead of draining to 0% on every dip.
+	g_object_set(playbin, "buffer-duration", (gint64)10 * GST_SECOND, NULL);
 }
 */
 import "C"
@@ -56,6 +59,7 @@ type LinuxPlayer struct {
 	playing   bool
 	live      bool // source gave NO_PREROLL: never manage buffering states
 	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
+	preroll   bool // before the first settled PLAYING of the current track
 
 	// events decouples emit from the caller's stack: the Controller invokes
 	// Play/Pause/... while holding its own mutex, and its event handler takes
@@ -131,6 +135,7 @@ func (p *LinuxPlayer) Play(url string) error {
 	// buffering; everything else (including HLS) is managed in monitorBus.
 	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL
 	p.buffering = false
+	p.preroll = true
 
 	p.playing = true
 	p.mu.Unlock()
@@ -253,10 +258,14 @@ func (p *LinuxPlayer) monitorBus() {
 				var percent C.gint
 				C.gst_message_parse_buffering(msg, &percent)
 				p.mu.Lock()
-				live, wantPlaying := p.live, p.playing
-				p.buffering = percent < 100
+				live, wantPlaying, preroll := p.live, p.playing, p.preroll
+				p.buffering = preroll && percent < 100
 				p.mu.Unlock()
-				if !live {
+				// Hold PAUSED only while the INITIAL buffer fills. Once the
+				// track is playing, re-pausing on every sub-100% dip turns
+				// network jitter into audible stutter — the queue absorbs
+				// dips on its own (see buffer-duration above).
+				if !live && preroll {
 					if percent < 100 {
 						C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
 					} else if wantPlaying {
@@ -278,6 +287,9 @@ func (p *LinuxPlayer) monitorBus() {
 					pendingState == C.GST_STATE_VOID_PENDING && !buffering {
 					switch newState {
 					case C.GST_STATE_PLAYING:
+						p.mu.Lock()
+						p.preroll = false
+						p.mu.Unlock()
 						p.send(Event{State: StatePlaying})
 					case C.GST_STATE_PAUSED:
 						p.send(Event{State: StatePaused})
