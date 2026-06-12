@@ -527,8 +527,11 @@ func (r *Resolver) Resolve(ctx context.Context, videoID string, forceRefresh boo
 		return ResolvedTrack{}, err
 	}
 
-	// If it's a livestream or proxy port is not set, play it directly
-	if track.IsLive || r.port == 0 {
+	// Play directly when it's a livestream, the proxy isn't up, or the URL
+	// already points at our proxy (live DASH resolves to /dash — rewrapping
+	// it as /stream would route a livestream through the VOD download path).
+	if track.IsLive || r.port == 0 ||
+		strings.HasPrefix(track.URL, fmt.Sprintf("http://127.0.0.1:%d/", r.port)) {
 		return track, nil
 	}
 
@@ -663,13 +666,42 @@ var (
 	reVideoSet    = regexp.MustCompile(`(?s)<AdaptationSet[^>]*mimeType="video/[^"]*".*?</AdaptationSet>`)
 )
 
+// maxStaticSegments bounds how much of the DVR window the static manifest
+// exposes (~30min at 2s segments). Playback starts at the manifest's FIRST
+// segment; the oldest DVR segments expire off the CDN almost immediately as
+// the window slides, so exposing the whole window makes playback start on
+// dead segments (silent gaps). A fresh ~30min tail starts on valid content
+// and still EOSes into a re-resolved fresh window.
+const maxStaticSegments = 900
+
+var (
+	reSegURL       = regexp.MustCompile(`<SegmentURL [^>]*/>`)
+	reSEntry       = regexp.MustCompile(`<S d="\d+"[^>]*/>`)
+	reSegListBlock = regexp.MustCompile(`(?s)<SegmentList[^>]*>.*?</SegmentList>`)
+)
+
 // staticizeLiveMPD rewrites YouTube's dynamic live MPD into a static one
-// covering the whole DVR window (segment timescale is 1000 by observation).
+// covering the freshest part of the DVR window (segment timescale is 1000 by
+// observation).
 func staticizeLiveMPD(body []byte) ([]byte, error) {
 	if !bytes.Contains(body, []byte(`type="dynamic"`)) {
 		return nil, fmt.Errorf("MPD is not dynamic")
 	}
-	durs := reSegDur.FindAllSubmatch(body, -1)
+	out := bytes.Replace(body, []byte(`type="dynamic"`), []byte(`type="static"`), 1)
+	out = reLiveAttrs.ReplaceAll(out, nil)
+	out = rePeriodStart.ReplaceAll(out, []byte("<Period"))
+	out = rePTO.ReplaceAll(out, nil)
+	out = reVideoSet.ReplaceAll(out, nil)
+
+	// Keep only the newest maxStaticSegments of the timeline and of every
+	// remaining SegmentList — trimmed per list (the audio AdaptationSet can
+	// carry several Representations, each with its own full list).
+	out = reSegListBlock.ReplaceAllFunc(out, func(block []byte) []byte {
+		block = trimLeading(block, reSEntry, maxStaticSegments)
+		return trimLeading(block, reSegURL, maxStaticSegments)
+	})
+
+	durs := reSegDur.FindAllSubmatch(out, -1)
 	if len(durs) == 0 {
 		return nil, fmt.Errorf("MPD has no segment timeline")
 	}
@@ -681,12 +713,25 @@ func staticizeLiveMPD(body []byte) ([]byte, error) {
 		}
 		totalMs += ms
 	}
-	out := bytes.Replace(body, []byte(`type="dynamic"`), []byte(`type="static"`), 1)
-	out = reLiveAttrs.ReplaceAll(out, nil)
 	out = bytes.Replace(out, []byte("<MPD "),
 		[]byte(fmt.Sprintf(`<MPD mediaPresentationDuration="PT%.3fS" `, float64(totalMs)/1000)), 1)
-	out = rePeriodStart.ReplaceAll(out, []byte("<Period"))
-	out = rePTO.ReplaceAll(out, nil)
-	out = reVideoSet.ReplaceAll(out, nil)
 	return out, nil
+}
+
+// trimLeading removes all but the last keep matches of re from body.
+func trimLeading(body []byte, re *regexp.Regexp, keep int) []byte {
+	locs := re.FindAllIndex(body, -1)
+	if len(locs) <= keep {
+		return body
+	}
+	drop := locs[:len(locs)-keep]
+	var b bytes.Buffer
+	b.Grow(len(body))
+	prev := 0
+	for _, l := range drop {
+		b.Write(body[prev:l[0]])
+		prev = l[1]
+	}
+	b.Write(body[prev:])
+	return b.Bytes()
 }
