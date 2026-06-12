@@ -28,9 +28,10 @@ static void set_playbin_volume(GstElement* playbin, double volume) {
 // also require codecs Fedora doesn't ship (H.264).
 static void set_playbin_audio_only(GstElement* playbin) {
 	g_object_set(playbin, "flags", (1 << 1) | (1 << 4), NULL);
-	// A generous buffer window so live radio rides out network jitter
-	// instead of draining to 0% on every dip.
-	g_object_set(playbin, "buffer-duration", (gint64)10 * GST_SECOND, NULL);
+	// NOTE: do not set "buffer-duration" here. On live streams only ~one
+	// segment of content exists ahead of the play position, so a large
+	// fixed buffering target can never be reached and the pipeline sits
+	// in buffering limbo forever.
 }
 */
 import "C"
@@ -61,6 +62,8 @@ type LinuxPlayer struct {
 	liveHint  bool // resolver says the next/current track is a livestream
 	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
 	preroll   bool // before the first settled PLAYING of the current track
+	confirmed bool // StatePlaying already reported for the current track
+	lastPos   C.gint64
 
 	// events decouples emit from the caller's stack: the Controller invokes
 	// Play/Pause/... while holding its own mutex, and its event handler takes
@@ -147,6 +150,8 @@ func (p *LinuxPlayer) Play(url string) error {
 	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL || p.liveHint
 	p.buffering = false
 	p.preroll = !p.live
+	p.confirmed = false
+	p.lastPos = -1
 
 	p.playing = true
 	p.mu.Unlock()
@@ -237,6 +242,29 @@ func (p *LinuxPlayer) monitorBus() {
 				C.GST_MESSAGE_ERROR|C.GST_MESSAGE_EOS|C.GST_MESSAGE_STATE_CHANGED|C.GST_MESSAGE_BUFFERING,
 			)
 			if msg == nil {
+				// No bus traffic this tick. Live DASH pipelines can stream
+				// audio without ever posting a PLAYING state-change (the
+				// async transition never completes) — confirm playback from
+				// the advancing position instead so the UI leaves "loading".
+				p.mu.Lock()
+				wantConfirm := p.playing && !p.confirmed
+				p.mu.Unlock()
+				if wantConfirm {
+					var pos C.gint64
+					if C.gst_element_query_position(p.playbin, C.GST_FORMAT_TIME, &pos) != 0 && pos > 0 {
+						p.mu.Lock()
+						advanced := p.lastPos >= 0 && pos > p.lastPos
+						p.lastPos = pos
+						if advanced {
+							p.confirmed = true
+							p.preroll = false
+						}
+						p.mu.Unlock()
+						if advanced {
+							p.send(Event{State: StatePlaying})
+						}
+					}
+				}
 				continue
 			}
 
@@ -294,17 +322,27 @@ func (p *LinuxPlayer) monitorBus() {
 				p.mu.Lock()
 				buffering := p.buffering
 				p.mu.Unlock()
-				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) &&
-					pendingState == C.GST_STATE_VOID_PENDING && !buffering {
+				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) && !buffering {
 					switch newState {
 					case C.GST_STATE_PLAYING:
+						// PLAYING is reported even mid-transition (pending !=
+						// VOID): live DASH pipelines can stream audio while
+						// the async state change never completes, and the UI
+						// would sit on "loading" despite audible playback.
 						p.mu.Lock()
 						p.preroll = false
+						p.confirmed = true
 						p.mu.Unlock()
 						p.send(Event{State: StatePlaying})
 					case C.GST_STATE_PAUSED:
+						if pendingState != C.GST_STATE_VOID_PENDING {
+							break // transitional preroll pause — not user-facing
+						}
 						p.send(Event{State: StatePaused})
 					case C.GST_STATE_READY, C.GST_STATE_NULL:
+						if pendingState != C.GST_STATE_VOID_PENDING {
+							break
+						}
 						// Play() bounces through READY when (re)starting a
 						// track — only a real stop should read as idle.
 						p.mu.Lock()
