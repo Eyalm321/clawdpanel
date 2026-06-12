@@ -133,7 +133,11 @@ func Defaults() Config {
 		// preserving the pre-collections behavior byte-for-byte.
 		Stations: []StationConfig{
 			{Name: "CLAUDE FM", Items: []StationItem{{Kind: ItemLivestream, ID: "YmQ7jRgf4f0"}}},
-			{Name: "LOFI GIRL", Items: []StationItem{{Kind: ItemLivestream, ID: "EWrX250Zhko"}}},
+			// Livestream video IDs rot whenever a stream restarts; these are
+			// Lofi Girl's long-running 24/7 streams (current as of 2026-06).
+			{Name: "LOFI GIRL", Items: []StationItem{{Kind: ItemLivestream, ID: "X4VbdwhkE10"}}},
+			{Name: "SYNTHWAVE", Items: []StationItem{{Kind: ItemLivestream, ID: "4xDzrJKXOOY"}}},
+			{Name: "JAZZ", Items: []StationItem{{Kind: ItemLivestream, ID: "A8jDx9TLMQc"}}},
 		},
 		ActiveStation: 0,
 		RadioVolume:   1.0,
