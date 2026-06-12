@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -660,7 +661,8 @@ func (r *Resolver) serveLiveManifest(w http.ResponseWriter, req *http.Request, v
 
 var (
 	reLiveAttrs   = regexp.MustCompile(`\s*(yt:)?(minimumUpdatePeriod|timeShiftBufferDepth|availabilityStartTime|mpdRequestTime|mpdResponseTime|earliestMediaSequence)="[^"]*"`)
-	reSegDur      = regexp.MustCompile(`<S d="(\d+)"`)
+	reSegDur      = regexp.MustCompile(`<S\b[^>]*?\bd="(\d+)"`)
+	reSegRepeat   = regexp.MustCompile(`<S\b[^>]*?\br="`)
 	rePeriodStart = regexp.MustCompile(`<Period start="PT[0-9.]+S"`)
 	reVideoSet    = regexp.MustCompile(`(?s)<AdaptationSet[^>]*mimeType="video/[^"]*".*?</AdaptationSet>`)
 )
@@ -677,9 +679,8 @@ const maxStaticWindowMs = 30 * 60 * 1000
 
 var (
 	reSegURL       = regexp.MustCompile(`<SegmentURL [^>]*/>`)
-	reSEntry       = regexp.MustCompile(`<S d="\d+"[^>]*/>`)
+	reSEntry       = regexp.MustCompile(`<S\b[^>]*/>`)
 	reSegListBlock = regexp.MustCompile(`(?s)<SegmentList[^>]*>.*?</SegmentList>`)
-	reSegListOpen  = regexp.MustCompile(`<SegmentList[^>]*>`)
 	reStartNumber  = regexp.MustCompile(`startNumber="\d+"`)
 	rePTOAttr      = regexp.MustCompile(`presentationTimeOffset="\d+"`)
 	reInt          = regexp.MustCompile(`\d+`)
@@ -689,13 +690,53 @@ var (
 // covering the freshest part of the DVR window (segment timescale is 1000 by
 // observation).
 func staticizeLiveMPD(body []byte) ([]byte, error) {
+	return staticizeLiveMPDWindow(body, liveWindowMs())
+}
+
+// liveWindowMs returns the static-manifest window bound, overridable via
+// CLAWDPANEL_LIVE_WINDOW_MS for testing the EOS→advance loop without waiting
+// out the full ~30min window. The override is logged once: a stray value left
+// in the environment shrinks every live window and the resulting EOS churn
+// would otherwise be a mystery.
+func liveWindowMs() int64 {
+	if v := os.Getenv("CLAWDPANEL_LIVE_WINDOW_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			logWindowOverrideOnce.Do(func() {
+				log.Printf("[radio] live manifest window overridden to %dms (CLAWDPANEL_LIVE_WINDOW_MS)", n)
+			})
+			return n
+		}
+	}
+	return maxStaticWindowMs
+}
+
+var logWindowOverrideOnce sync.Once
+
+// staticizeLiveMPDWindow is staticizeLiveMPD with an explicit window bound,
+// split out so tests can exercise the trim with a small window.
+func staticizeLiveMPDWindow(body []byte, windowMs int64) ([]byte, error) {
 	if !bytes.Contains(body, []byte(`type="dynamic"`)) {
 		return nil, fmt.Errorf("MPD is not dynamic")
 	}
-	out := bytes.Replace(body, []byte(`type="dynamic"`), []byte(`type="static"`), 1)
+	// Drop the video AdaptationSets first: they are ~90% of the ~1MB document,
+	// and this runs on every manifest refetch (~1.5s) — the remaining passes
+	// then scan a few KB instead.
+	out := reVideoSet.ReplaceAll(body, nil)
+	out = bytes.Replace(out, []byte(`type="dynamic"`), []byte(`type="static"`), 1)
 	out = reLiveAttrs.ReplaceAll(out, nil)
 	out = rePeriodStart.ReplaceAll(out, []byte("<Period"))
-	out = reVideoSet.ReplaceAll(out, nil)
+
+	// The PTO arithmetic below assumes ms-granularity <S d="..."> entries,
+	// one per segment. Fail loudly (and visibly in the log) if YouTube ever
+	// switches to a different timescale or to r= repeat-compacted timelines —
+	// silently mis-shifting the PTO reproduces the scheduled-hours-in-the-
+	// future silence this rewrite exists to prevent.
+	if !bytes.Contains(out, []byte(`timescale="1000"`)) {
+		return nil, fmt.Errorf("segment timeline is not timescale=1000")
+	}
+	if reSegRepeat.Match(out) {
+		return nil, fmt.Errorf("segment timeline uses r= repeat compaction")
+	}
 
 	// The audio AdaptationSet carries ONE attributed SegmentList (startNumber,
 	// presentationTimeOffset, timescale + the <S> timeline) and one bare
@@ -719,7 +760,7 @@ func staticizeLiveMPD(body []byte) ([]byte, error) {
 	if segMs <= 0 {
 		return nil, fmt.Errorf("MPD has no segment duration")
 	}
-	keep := int(maxStaticWindowMs / segMs)
+	keep := int(windowMs / segMs)
 	if keep < 1 {
 		keep = 1
 	}
@@ -746,18 +787,16 @@ func staticizeLiveMPD(body []byte) ([]byte, error) {
 
 	out = reSegListBlock.ReplaceAllFunc(out, func(block []byte) []byte {
 		block = trimLeading(block, reSEntry, keep)
-		return trimLeading(block, reSegURL, keep)
-	})
-
-	// Shift the attributed SegmentList tag to the trimmed window's start.
-	out = reSegListOpen.ReplaceAllFunc(out, func(open []byte) []byte {
-		open = replaceInt64Attr(open, reStartNumber, "startNumber", func(v int64) int64 {
+		block = trimLeading(block, reSegURL, keep)
+		// Shift the attributed SegmentList tag (the one carrying
+		// startNumber/PTO) to the trimmed window's start; bare per-
+		// Representation tags have neither attribute and pass unchanged.
+		block = replaceInt64Attr(block, reStartNumber, "startNumber", func(v int64) int64 {
 			return v + int64(len(sEntries)-keep)
 		})
-		open = replaceInt64Attr(open, rePTOAttr, "presentationTimeOffset", func(v int64) int64 {
+		return replaceInt64Attr(block, rePTOAttr, "presentationTimeOffset", func(v int64) int64 {
 			return v + droppedMs
 		})
-		return open
 	})
 
 	out = bytes.Replace(out, []byte("<MPD "),

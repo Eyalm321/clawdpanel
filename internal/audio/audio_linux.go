@@ -51,27 +51,79 @@ func initGStreamer() {
 	})
 }
 
-type LinuxPlayer struct {
-	mu        sync.Mutex
-	emit      func(Event)
-	playbin   *C.GstElement
-	stopChan  chan struct{}
-	wg        sync.WaitGroup
-	playing   bool
-	live      bool // source gave NO_PREROLL: never manage buffering states
-	liveHint  bool // resolver says the next/current track is a livestream
-	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
-	preroll   bool // before the first settled PLAYING of the current track
-	prerolled bool // ASYNC_DONE received for the current track
-	confirmed bool // StatePlaying already reported for the current track
-	lastPos   C.gint64
+// playbackPhase is the user-intent half of the player's state for the current
+// track: it gates which pipeline state changes are reported to the UI. All
+// transitions happen under LinuxPlayer.mu:
+//
+//	Play ──────────────► prerolling ──(promotion to PLAYING lands)──► playing
+//	  │ (live source)                                                │  ▲
+//	  └────────────────────────────────────────────────────────────► │  │
+//	Pause: {prerolling,playing} ► paused          Resume: paused ────┘  │
+//	Stop:  any ► idle                                                   │
+//	(position-confirmation / settled PLAYING state both land here ─────┘
+type playbackPhase int
 
-	// events decouples emit from the caller's stack: the Controller invokes
-	// Play/Pause/... while holding its own mutex, and its event handler takes
-	// that same mutex — a synchronous emit from inside those calls deadlocks
-	// the controller against itself. A dispatcher goroutine (started in New)
-	// delivers events in order instead, matching the async-emit contract of
-	// the Windows/macOS players.
+const (
+	phaseIdle       playbackPhase = iota // no track, or stopped
+	phasePrerolling                      // held in PAUSED until preroll settles and the initial buffer fills
+	phasePlaying                         // user wants playback and the pipeline is (moving to) PLAYING
+	phasePaused                          // user-requested pause
+)
+
+// wantsPlayback reports whether the user intent behind this phase is "audio
+// should be (or become) audible".
+func (ph playbackPhase) wantsPlayback() bool {
+	return ph == phasePrerolling || ph == phasePlaying
+}
+
+func (ph playbackPhase) String() string {
+	switch ph {
+	case phaseIdle:
+		return "idle"
+	case phasePrerolling:
+		return "prerolling"
+	case phasePlaying:
+		return "playing"
+	case phasePaused:
+		return "paused"
+	}
+	return "?"
+}
+
+// trackState is the per-track player state, reset by Play; guarded by
+// LinuxPlayer.mu.
+//
+// The initial-fill fields (prerolled/fillDone/lowBuffer) are deliberately
+// ORTHOGONAL to phase: the buffering hold must survive phase changes — a
+// pause/resume mid-fill, or a stale PLAYING state-change landing during a
+// buffer dip, must not cancel the management or the pipeline wedges in
+// PAUSED with the UI showing playing.
+type trackState struct {
+	phase     playbackPhase
+	live      bool     // NO_PREROLL source or resolver live-hint: skip buffering management entirely
+	prerolled bool     // ASYNC_DONE received: the demuxer's segment mapping is settled
+	fillDone  bool     // initial buffer fill complete: promotion to PLAYING was issued; later dips are unmanaged
+	lowBuffer bool     // mid-fill dip below 100%: pipeline held in PAUSED, state-change reports suppressed
+	confirmed bool     // StatePlaying already reported to the UI for this track
+	lastPos   C.gint64 // last queried position, for advance detection (-1 = none yet)
+}
+
+type LinuxPlayer struct {
+	mu       sync.Mutex
+	emit     func(Event)
+	playbin  *C.GstElement
+	stopChan chan struct{}
+	wg       sync.WaitGroup
+	liveHint bool // resolver says the next track is a livestream
+	track    trackState
+
+	// events decouples emit from the caller's stack — the player-side half of
+	// the event spine's threading contract: the player NEVER emits on a
+	// caller's stack. The Controller invokes Play/Pause/... while holding its
+	// own mutex, and its event handler takes that same mutex — a synchronous
+	// emit from inside those calls deadlocks the controller against itself.
+	// A dispatcher goroutine (started in New) delivers events in order
+	// instead, matching the async-emit contract of the Windows/macOS players.
 	events chan Event
 }
 
@@ -145,8 +197,8 @@ func (p *LinuxPlayer) Play(url string) error {
 	// PLAYING races the demuxer's initial segment event — DASH segments keep
 	// their original live-stream timestamps, and without the segment mapping
 	// settled the sink schedules them hours into the future: position
-	// advances, pure silence. monitorBus promotes to PLAYING on ASYNC_DONE /
-	// buffering-100%.
+	// advances, pure silence. monitorBus promotes to PLAYING once preroll
+	// settles and the initial buffer fills (handleAsyncDone/handleBuffering).
 	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
 	if ret == C.GST_STATE_CHANGE_FAILURE {
 		p.mu.Unlock()
@@ -154,20 +206,23 @@ func (p *LinuxPlayer) Play(url string) error {
 	}
 	// True live sources preroll with NO_PREROLL and must never be paused for
 	// buffering; they go to PLAYING immediately.
-	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL || p.liveHint
-	if p.live {
+	live := ret == C.GST_STATE_CHANGE_NO_PREROLL || p.liveHint
+	if live {
 		if C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING) == C.GST_STATE_CHANGE_FAILURE {
 			p.mu.Unlock()
 			return fmt.Errorf("failed to set GStreamer state to PLAYING")
 		}
 	}
-	p.buffering = false
-	p.preroll = !p.live
-	p.prerolled = false
-	p.confirmed = false
-	p.lastPos = -1
+	p.track = trackState{
+		phase:    phasePrerolling,
+		live:     live,
+		fillDone: live, // live tracks have no managed fill
+		lastPos:  -1,
+	}
+	if live {
+		p.track.phase = phasePlaying
+	}
 
-	p.playing = true
 	p.mu.Unlock()
 	p.send(Event{State: StateLoading})
 	return nil
@@ -184,7 +239,7 @@ func (p *LinuxPlayer) Resume() error {
 		return fmt.Errorf("failed to set GStreamer state to PLAYING")
 	}
 
-	p.playing = true
+	p.track.phase = phasePlaying
 	p.mu.Unlock()
 	p.send(Event{State: StatePlaying})
 	return nil
@@ -193,7 +248,7 @@ func (p *LinuxPlayer) Resume() error {
 func (p *LinuxPlayer) Pause() error {
 	p.mu.Lock()
 
-	if !p.playing {
+	if !p.track.phase.wantsPlayback() {
 		p.mu.Unlock()
 		return nil
 	}
@@ -204,7 +259,7 @@ func (p *LinuxPlayer) Pause() error {
 		return fmt.Errorf("failed to set GStreamer state to PAUSED")
 	}
 
-	p.playing = false
+	p.track.phase = phasePaused
 	p.mu.Unlock()
 	p.send(Event{State: StatePaused})
 	return nil
@@ -213,7 +268,7 @@ func (p *LinuxPlayer) Pause() error {
 func (p *LinuxPlayer) Stop() error {
 	p.mu.Lock()
 	C.gst_element_set_state(p.playbin, C.GST_STATE_READY)
-	p.playing = false
+	p.track.phase = phaseIdle
 	p.mu.Unlock()
 	p.send(Event{State: StateIdle})
 	return nil
@@ -234,6 +289,8 @@ func (p *LinuxPlayer) Seek(seconds float64) error {
 	return nil
 }
 
+// monitorBus is the player's single bus-polling loop. It only routes: bus
+// messages go to handleBusMessage, quiet ticks to confirmFromPosition.
 func (p *LinuxPlayer) monitorBus() {
 	defer p.wg.Done()
 
@@ -256,156 +313,180 @@ func (p *LinuxPlayer) monitorBus() {
 				C.GST_MESSAGE_ERROR|C.GST_MESSAGE_EOS|C.GST_MESSAGE_STATE_CHANGED|C.GST_MESSAGE_BUFFERING|C.GST_MESSAGE_ASYNC_DONE,
 			)
 			if msg == nil {
-				// No bus traffic this tick. Live DASH pipelines can stream
-				// audio without ever posting a PLAYING state-change (the
-				// async transition never completes) — confirm playback from
-				// the advancing position instead so the UI leaves "loading".
-				p.mu.Lock()
-				wantConfirm := p.playing && !p.confirmed
-				p.mu.Unlock()
-				if wantConfirm {
-					var pos C.gint64
-					if C.gst_element_query_position(p.playbin, C.GST_FORMAT_TIME, &pos) != 0 && pos > 0 {
-						p.mu.Lock()
-						advanced := p.lastPos >= 0 && pos > p.lastPos
-						p.lastPos = pos
-						if advanced {
-							p.confirmed = true
-							p.preroll = false
-						}
-						p.mu.Unlock()
-						if advanced {
-							p.send(Event{State: StatePlaying})
-						}
-					}
-				}
+				p.confirmFromPosition()
 				continue
 			}
-
-			msgType := C.get_message_type(msg)
-			switch msgType {
-			case C.GST_MESSAGE_ERROR:
-				var err *C.GError
-				var debugInfo *C.gchar
-				C.gst_message_parse_error(msg, &err, &debugInfo)
-				errStr := C.GoString(err.message)
-				C.g_error_free(err)
-				C.g_free(C.gpointer(debugInfo))
-
-				p.send(Event{
-					State: StateError,
-					Err:   errStr,
-				})
-
-			case C.GST_MESSAGE_EOS:
-				// End-of-stream: the track played to its natural end. Emit
-				// StateEnded (distinct from idle/paused) so the station player
-				// can auto-advance. Livestreams never reach EOS.
-				p.send(Event{State: StateEnded})
-
-			case C.GST_MESSAGE_ASYNC_DONE:
-				// Preroll complete. Play() leaves non-live pipelines in PAUSED;
-				// promote to PLAYING here unless a rebuffer is holding us back
-				// (the buffering handler resumes at 100% in that case).
-				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) {
-					p.mu.Lock()
-					p.prerolled = true
-					promote := p.playing && !p.buffering
-					p.mu.Unlock()
-					log.Printf("[audio] gst: ASYNC_DONE (promote=%v)", promote)
-					if promote {
-						C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
-					}
-				}
-
-			case C.GST_MESSAGE_BUFFERING:
-				// Network streams must sit in PAUSED until the buffer fills,
-				// then resume — without this the pipeline stalls in preroll
-				// and playback never starts. gst-launch does this dance for
-				// you; applications must do it themselves.
-				var percent C.gint
-				C.gst_message_parse_buffering(msg, &percent)
-				p.mu.Lock()
-				live, wantPlaying, preroll := p.live, p.playing, p.preroll
-				prerolled := p.prerolled
-				p.buffering = preroll && percent < 100
-				p.mu.Unlock()
-				// Hold PAUSED only while the INITIAL buffer fills. Once the
-				// track is playing, re-pausing on every sub-100% dip turns
-				// network jitter into audible stutter — the queue absorbs
-				// dips on its own (see buffer-duration above).
-				// Promotion to PLAYING additionally waits for preroll to
-				// settle (ASYNC_DONE): going PLAYING mid-preroll races the
-				// demuxer's segment event and the sink schedules buffers at
-				// their raw media timestamps — silence (see Play).
-				if percent == 100 || percent%25 == 0 {
-					log.Printf("[audio] gst: buffering %d%% (live=%v preroll=%v prerolled=%v)", int(percent), live, preroll, prerolled)
-				}
-				if !live && preroll {
-					if percent < 100 {
-						C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
-					} else if wantPlaying && prerolled {
-						C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
-					}
-				}
-
-			case C.GST_MESSAGE_STATE_CHANGED:
-				var oldState, newState, pendingState C.GstState
-				C.gst_message_parse_state_changed(msg, &oldState, &newState, &pendingState)
-
-				// Only process settled state changes of the playbin itself —
-				// transitional states (pending != VOID) and buffering-induced
-				// pauses would flicker the UI through paused/loading.
-				p.mu.Lock()
-				buffering := p.buffering
-				p.mu.Unlock()
-				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) {
-					log.Printf("[audio] gst: playbin state %d->%d (pending %d, buffering=%v)", int(oldState), int(newState), int(pendingState), buffering)
-				}
-				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) && !buffering {
-					switch newState {
-					case C.GST_STATE_PLAYING:
-						// PLAYING is reported even mid-transition (pending !=
-						// VOID): live DASH pipelines can stream audio while
-						// the async state change never completes, and the UI
-						// would sit on "loading" despite audible playback.
-						p.mu.Lock()
-						p.preroll = false
-						p.confirmed = true
-						p.mu.Unlock()
-						p.send(Event{State: StatePlaying})
-					case C.GST_STATE_PAUSED:
-						if pendingState != C.GST_STATE_VOID_PENDING {
-							break // transitional preroll pause — not user-facing
-						}
-						p.mu.Lock()
-						wantPlaying := p.playing
-						p.mu.Unlock()
-						if wantPlaying {
-							// Settled PAUSED while the user wants playback: the
-							// preroll hold before promotion to PLAYING (see
-							// Play) — not user-facing either.
-							break
-						}
-						p.send(Event{State: StatePaused})
-					case C.GST_STATE_READY, C.GST_STATE_NULL:
-						if pendingState != C.GST_STATE_VOID_PENDING {
-							break
-						}
-						// Play() bounces through READY when (re)starting a
-						// track — only a real stop should read as idle.
-						p.mu.Lock()
-						stopped := !p.playing
-						p.mu.Unlock()
-						if stopped {
-							p.send(Event{State: StateIdle})
-						}
-					}
-				}
-			}
-
+			p.handleBusMessage(msg)
 			C.gst_message_unref(msg)
 		}
+	}
+}
+
+// confirmFromPosition reports StatePlaying from an advancing playback
+// position. Live pipelines can stream audio without ever posting a settled
+// PLAYING state-change (the async transition never completes), so without
+// this the UI sits on "loading" despite audible playback.
+func (p *LinuxPlayer) confirmFromPosition() {
+	p.mu.Lock()
+	wantConfirm := p.track.phase.wantsPlayback() && !p.track.confirmed
+	p.mu.Unlock()
+	if !wantConfirm {
+		return
+	}
+	var pos C.gint64
+	if C.gst_element_query_position(p.playbin, C.GST_FORMAT_TIME, &pos) == 0 || pos <= 0 {
+		return
+	}
+	p.mu.Lock()
+	advanced := p.track.lastPos >= 0 && pos > p.track.lastPos
+	p.track.lastPos = pos
+	if advanced {
+		p.track.confirmed = true
+		p.track.phase = phasePlaying
+	}
+	p.mu.Unlock()
+	if advanced {
+		p.send(Event{State: StatePlaying})
+	}
+}
+
+// handleBusMessage dispatches one GStreamer bus message.
+func (p *LinuxPlayer) handleBusMessage(msg *C.GstMessage) {
+	fromPlaybin := C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin))
+
+	switch C.get_message_type(msg) {
+	case C.GST_MESSAGE_ERROR:
+		var gerr *C.GError
+		var debugInfo *C.gchar
+		C.gst_message_parse_error(msg, &gerr, &debugInfo)
+		errStr := C.GoString(gerr.message)
+		C.g_error_free(gerr)
+		C.g_free(C.gpointer(debugInfo))
+		p.send(Event{State: StateError, Err: errStr})
+
+	case C.GST_MESSAGE_EOS:
+		// End-of-stream: the track played to its natural end. Emit
+		// StateEnded (distinct from idle/paused) so the station player
+		// can auto-advance. Livestreams never reach EOS (the static live
+		// window does — its EOS drives the advance into a fresh window).
+		p.send(Event{State: StateEnded})
+
+	case C.GST_MESSAGE_ASYNC_DONE:
+		if fromPlaybin {
+			p.handleAsyncDone()
+		}
+
+	case C.GST_MESSAGE_BUFFERING:
+		var percent C.gint
+		C.gst_message_parse_buffering(msg, &percent)
+		p.handleBuffering(int(percent))
+
+	case C.GST_MESSAGE_STATE_CHANGED:
+		if fromPlaybin {
+			var oldState, newState, pendingState C.GstState
+			C.gst_message_parse_state_changed(msg, &oldState, &newState, &pendingState)
+			p.handleStateChanged(oldState, newState, pendingState)
+		}
+	}
+}
+
+// handleAsyncDone marks preroll settled and promotes to PLAYING if the
+// initial fill isn't being held back by a low buffer. The set_state runs
+// under p.mu so the check-and-promote is atomic against a concurrent Pause.
+func (p *LinuxPlayer) handleAsyncDone() {
+	p.mu.Lock()
+	t := &p.track
+	t.prerolled = true
+	promote := !t.fillDone && !t.lowBuffer && t.phase.wantsPlayback()
+	if promote {
+		t.fillDone = true
+		C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
+	}
+	p.mu.Unlock()
+	log.Printf("[audio] gst: ASYNC_DONE (promote=%v)", promote)
+}
+
+// handleBuffering manages the PAUSED hold during the initial buffer fill.
+//
+// Network streams must sit in PAUSED until the buffer fills, then resume —
+// without this the pipeline stalls in preroll and playback never starts
+// (gst-launch does this dance for you; applications must do it themselves).
+// The hold applies ONLY during the initial fill (!fillDone): once promotion
+// has been issued, re-pausing on every sub-100% dip turns network jitter
+// into audible stutter — the queue absorbs dips on its own. Promotion
+// additionally waits for ASYNC_DONE (prerolled): going PLAYING mid-preroll
+// races the demuxer's segment event and the sink schedules buffers at their
+// raw media timestamps — silence (see Play). Management is keyed on
+// fillDone, NOT phase: a pause/resume mid-fill or a stale PLAYING
+// state-change must not cancel the hold.
+func (p *LinuxPlayer) handleBuffering(percent int) {
+	p.mu.Lock()
+	t := &p.track
+	managed := !t.live && !t.fillDone
+	promoted := false
+	if managed {
+		t.lowBuffer = percent < 100
+		if percent < 100 {
+			C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
+		} else if t.prerolled && t.phase.wantsPlayback() {
+			t.fillDone = true
+			promoted = true
+			C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
+		}
+	}
+	live, phase, prerolled := t.live, t.phase, t.prerolled
+	p.mu.Unlock()
+
+	if percent == 100 || percent%25 == 0 {
+		log.Printf("[audio] gst: buffering %d%% (live=%v phase=%s prerolled=%v promoted=%v)", percent, live, phase, prerolled, promoted)
+	}
+}
+
+// handleStateChanged turns settled playbin state changes into UI events.
+// Phase gates each emit: transitional preroll pauses and the READY bounce in
+// Play would otherwise flicker the UI through paused/idle. While a mid-fill
+// buffer dip holds the pipeline (lowBuffer), every report is suppressed: the
+// in-flight PLAYING state-change from a just-issued promotion would otherwise
+// read as "playback started" while the pipeline is being re-paused.
+func (p *LinuxPlayer) handleStateChanged(oldState, newState, pendingState C.GstState) {
+	var ev Event
+	settled := pendingState == C.GST_STATE_VOID_PENDING
+
+	p.mu.Lock()
+	t := &p.track
+	phase := t.phase
+	suppressed := t.lowBuffer
+	if !suppressed {
+		switch newState {
+		case C.GST_STATE_PLAYING:
+			// PLAYING is reported even mid-transition (pending != VOID):
+			// live pipelines can stream audio while the async state change
+			// never completes, and the UI would sit on "loading" despite
+			// audible playback.
+			if t.phase.wantsPlayback() {
+				t.phase = phasePlaying
+				t.confirmed = true
+				ev = Event{State: StatePlaying}
+			}
+		case C.GST_STATE_PAUSED:
+			// Settled PAUSED is user-facing only when the user asked for
+			// it; during the initial fill it is the preroll/buffer hold.
+			if settled && phase == phasePaused {
+				ev = Event{State: StatePaused}
+			}
+		case C.GST_STATE_READY, C.GST_STATE_NULL:
+			// Play() bounces through READY when (re)starting a track —
+			// only a real stop should read as idle.
+			if settled && phase == phaseIdle {
+				ev = Event{State: StateIdle}
+			}
+		}
+	}
+	p.mu.Unlock()
+
+	log.Printf("[audio] gst: playbin state %d->%d (pending %d, phase=%s, suppressed=%v)", int(oldState), int(newState), int(pendingState), phase, suppressed)
+	if ev.State != "" {
+		p.send(ev)
 	}
 }
 
