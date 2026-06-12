@@ -58,6 +58,7 @@ type LinuxPlayer struct {
 	wg        sync.WaitGroup
 	playing   bool
 	live      bool // source gave NO_PREROLL: never manage buffering states
+	liveHint  bool // resolver says the next/current track is a livestream
 	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
 	preroll   bool // before the first settled PLAYING of the current track
 
@@ -68,6 +69,16 @@ type LinuxPlayer struct {
 	// delivers events in order instead, matching the async-emit contract of
 	// the Windows/macOS players.
 	events chan Event
+}
+
+// SetLiveHint marks the NEXT Play as a live stream (known from the resolver).
+// Live playback must never be held in PAUSED for buffering: starting behind
+// the live edge starves the demuxer periodically — audible stutter for the
+// stream's whole lifetime.
+func (p *LinuxPlayer) SetLiveHint(live bool) {
+	p.mu.Lock()
+	p.liveHint = live
+	p.mu.Unlock()
 }
 
 // send queues an event for the dispatcher; drops if the queue is saturated
@@ -133,9 +144,9 @@ func (p *LinuxPlayer) Play(url string) error {
 	}
 	// True live sources preroll with NO_PREROLL and must never be paused for
 	// buffering; everything else (including HLS) is managed in monitorBus.
-	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL
+	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL || p.liveHint
 	p.buffering = false
-	p.preroll = true
+	p.preroll = !p.live
 
 	p.playing = true
 	p.mu.Unlock()
