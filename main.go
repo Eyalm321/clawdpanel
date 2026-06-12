@@ -58,6 +58,9 @@ func main() {
 		MinHeight:        1,
 		MaxHeight:        0,
 		Frameless:        true,
+		// Remote-debugging escape hatch: CLAWDPANEL_DEVTOOLS=1 enables the
+		// WebKit inspector (pair with WEBKIT_INSPECTOR_HTTP_SERVER on Linux).
+		DevToolsEnabled:  os.Getenv("CLAWDPANEL_DEVTOOLS") == "1",
 		AlwaysOnTop:      true,
 		// On Linux fixed-size WM hints would also block our own wmctrl resize
 		// when docking the bar to the monitor width; dock-type windows aren't
