@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -242,6 +243,14 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	}
 
 	a.runTray()
+	if runtime.GOOS == "linux" {
+		// Linux v1: the window starts Hidden and the reveal controller's
+		// hide/show + cursor-poll primitives are no-ops here, so nothing
+		// would ever surface the bar (and GNOME needs an extension to show
+		// the tray icon). Show it unconditionally; auto-hide stays
+		// Windows-only.
+		window.Show()
+	}
 	// The reveal controller owns the cursor poll loop and the whole auto-hide
 	// state machine now; App just starts it.
 	go a.revealCtrl.Run(a.app.Context())
