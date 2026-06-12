@@ -56,6 +56,24 @@ type LinuxPlayer struct {
 	playing   bool
 	live      bool // source gave NO_PREROLL: never manage buffering states
 	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
+
+	// events decouples emit from the caller's stack: the Controller invokes
+	// Play/Pause/... while holding its own mutex, and its event handler takes
+	// that same mutex — a synchronous emit from inside those calls deadlocks
+	// the controller against itself. A dispatcher goroutine (started in New)
+	// delivers events in order instead, matching the async-emit contract of
+	// the Windows/macOS players.
+	events chan Event
+}
+
+// send queues an event for the dispatcher; drops if the queue is saturated
+// (the dispatcher is wedged) rather than blocking a caller.
+func (p *LinuxPlayer) send(ev Event) {
+	select {
+	case p.events <- ev:
+	default:
+		log.Printf("[audio] event queue full, dropping %s", ev.State)
+	}
 }
 
 func New(emit func(Event)) (Player, error) {
@@ -79,17 +97,22 @@ func New(emit func(Event)) (Player, error) {
 		emit:     emit,
 		playbin:  playbin,
 		stopChan: make(chan struct{}),
+		events:   make(chan Event, 64),
 	}
 
 	p.wg.Add(1)
 	go p.monitorBus()
+	go func() {
+		for ev := range p.events {
+			p.emit(ev)
+		}
+	}()
 
 	return p, nil
 }
 
 func (p *LinuxPlayer) Play(url string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Stop previous playback if active
 	C.gst_element_set_state(p.playbin, C.GST_STATE_READY)
@@ -101,6 +124,7 @@ func (p *LinuxPlayer) Play(url string) error {
 
 	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
 	if ret == C.GST_STATE_CHANGE_FAILURE {
+		p.mu.Unlock()
 		return fmt.Errorf("failed to set GStreamer state to PLAYING")
 	}
 	// True live sources preroll with NO_PREROLL and must never be paused for
@@ -109,51 +133,54 @@ func (p *LinuxPlayer) Play(url string) error {
 	p.buffering = false
 
 	p.playing = true
-	p.emit(Event{State: StateLoading})
+	p.mu.Unlock()
+	p.send(Event{State: StateLoading})
 	return nil
 }
 
 func (p *LinuxPlayer) Resume() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Resume from the paused position: just move back to PLAYING without
 	// re-setting the URI (which would restart the track from the beginning).
 	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
 	if ret == C.GST_STATE_CHANGE_FAILURE {
+		p.mu.Unlock()
 		return fmt.Errorf("failed to set GStreamer state to PLAYING")
 	}
 
 	p.playing = true
-	p.emit(Event{State: StatePlaying})
+	p.mu.Unlock()
+	p.send(Event{State: StatePlaying})
 	return nil
 }
 
 func (p *LinuxPlayer) Pause() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if !p.playing {
+		p.mu.Unlock()
 		return nil
 	}
 
 	ret := C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
 	if ret == C.GST_STATE_CHANGE_FAILURE {
+		p.mu.Unlock()
 		return fmt.Errorf("failed to set GStreamer state to PAUSED")
 	}
 
 	p.playing = false
-	p.emit(Event{State: StatePaused})
+	p.mu.Unlock()
+	p.send(Event{State: StatePaused})
 	return nil
 }
 
 func (p *LinuxPlayer) Stop() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	C.gst_element_set_state(p.playbin, C.GST_STATE_READY)
 	p.playing = false
-	p.emit(Event{State: StateIdle})
+	p.mu.Unlock()
+	p.send(Event{State: StateIdle})
 	return nil
 }
 
@@ -207,7 +234,7 @@ func (p *LinuxPlayer) monitorBus() {
 				C.g_error_free(err)
 				C.g_free(C.gpointer(debugInfo))
 
-				p.emit(Event{
+				p.send(Event{
 					State: StateError,
 					Err:   errStr,
 				})
@@ -216,7 +243,7 @@ func (p *LinuxPlayer) monitorBus() {
 				// End-of-stream: the track played to its natural end. Emit
 				// StateEnded (distinct from idle/paused) so the station player
 				// can auto-advance. Livestreams never reach EOS.
-				p.emit(Event{State: StateEnded})
+				p.send(Event{State: StateEnded})
 
 			case C.GST_MESSAGE_BUFFERING:
 				// Network streams must sit in PAUSED until the buffer fills,
@@ -251,9 +278,9 @@ func (p *LinuxPlayer) monitorBus() {
 					pendingState == C.GST_STATE_VOID_PENDING && !buffering {
 					switch newState {
 					case C.GST_STATE_PLAYING:
-						p.emit(Event{State: StatePlaying})
+						p.send(Event{State: StatePlaying})
 					case C.GST_STATE_PAUSED:
-						p.emit(Event{State: StatePaused})
+						p.send(Event{State: StatePaused})
 					case C.GST_STATE_READY, C.GST_STATE_NULL:
 						// Play() bounces through READY when (re)starting a
 						// track — only a real stop should read as idle.
@@ -261,7 +288,7 @@ func (p *LinuxPlayer) monitorBus() {
 						stopped := !p.playing
 						p.mu.Unlock()
 						if stopped {
-							p.emit(Event{State: StateIdle})
+							p.send(Event{State: StateIdle})
 						}
 					}
 				}
@@ -275,6 +302,7 @@ func (p *LinuxPlayer) monitorBus() {
 func (p *LinuxPlayer) Close() error {
 	close(p.stopChan)
 	p.wg.Wait()
+	close(p.events)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
