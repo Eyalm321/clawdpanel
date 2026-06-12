@@ -28,6 +28,7 @@ type Controller struct {
 	player        Player
 	resolver      StreamResolver
 	emit          func(Event)
+	events        chan Event
 	activeVideoID string
 	activeURL     string
 	currentState  State
@@ -40,7 +41,17 @@ func NewController(resolver StreamResolver, emit func(Event)) (*Controller, erro
 	c := &Controller{
 		resolver: resolver,
 		emit:     emit,
+		events:   make(chan Event, 64),
 	}
+	// Outward events are dispatched off the caller's stack: most emits happen
+	// under c.mu, and downstream (the station player) reacts to some of them
+	// by calling straight back into Controller methods that take c.mu — a
+	// synchronous emit deadlocks the controller against itself.
+	go func() {
+		for ev := range c.events {
+			c.emit(ev)
+		}
+	}()
 
 	player, err := New(c.handlePlayerEvent)
 	if err != nil {
@@ -50,9 +61,33 @@ func NewController(resolver StreamResolver, emit func(Event)) (*Controller, erro
 	return c, nil
 }
 
+// send queues an outward event; drops (with a log) if the dispatcher is
+// saturated rather than blocking a caller that may hold c.mu.
+func (c *Controller) send(ev Event) {
+	if c.events == nil {
+		// Constructed without NewController (tests build the struct
+		// directly) — deliver synchronously.
+		c.emit(ev)
+		return
+	}
+	select {
+	case c.events <- ev:
+	default:
+		log.Printf("[audio] controller event queue full, dropping %s", ev.State)
+	}
+}
+
 func (c *Controller) handlePlayerEvent(ev Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// A terminal error is sticky until the next Play/Resume: the station
+	// player reacts to StateError by stopping the engine, and that stop's
+	// own StateIdle must not repaint the UI from [ERR] back to a blank
+	// play button.
+	if c.currentState == StateError && ev.State == StateIdle {
+		return
+	}
 
 	// Suppress duplicate idle/unaltered state transitions to avoid log/event spam.
 	// A steady StatePlaying tick isn't a transition but does carry an advanced
@@ -67,7 +102,7 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 				// so the bar shows LIVE instead of a garbage duration.
 				pos, dur = 0, 0
 			}
-			c.emit(Event{
+			c.send(Event{
 				State:    StatePlaying,
 				Progress: true,
 				VideoID:  c.activeVideoID,
@@ -90,7 +125,7 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 				fresh, err := c.resolver.Resolve(context.Background(), videoID, true)
 				if err != nil {
 					log.Printf("[audio] Refresh resolve failed on retry: %v", err)
-					c.emit(Event{State: StateError, VideoID: videoID, Err: err.Error()})
+					c.send(Event{State: StateError, VideoID: videoID, Err: err.Error()})
 					return
 				}
 
@@ -108,7 +143,7 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 					log.Printf("[audio] Replaying refreshed URL: %s", fresh.URL)
 					if err := player.Play(fresh.URL); err != nil {
 						log.Printf("[audio] Retry play failed: %v", err)
-						c.emit(Event{State: StateError, VideoID: videoID, Err: err.Error()})
+						c.send(Event{State: StateError, VideoID: videoID, Err: err.Error()})
 					}
 				}
 			}(c.activeVideoID)
@@ -132,7 +167,7 @@ func (c *Controller) handlePlayerEvent(ev Event) {
 	if c.curIsLive {
 		ev.Position, ev.Duration = 0, 0 // see progress branch: hide bogus live duration
 	}
-	c.emit(ev)
+	c.send(ev)
 }
 
 func (c *Controller) PlayVideo(ctx context.Context, videoID string) error {
@@ -149,13 +184,14 @@ func (c *Controller) PlayVideo(ctx context.Context, videoID string) error {
 	c.activeVideoID = videoID
 	c.currentState = StateLoading
 	c.retried = false
-	c.emit(Event{State: StateLoading, VideoID: videoID})
+	c.send(Event{State: StateLoading, VideoID: videoID})
 
 	log.Printf("[audio] Resolving stream URL for video %s...", videoID)
 	track, err := c.resolver.Resolve(ctx, videoID, false)
 	if err != nil {
 		log.Printf("[audio] Resolve failed: %v", err)
-		c.emit(Event{State: StateError, VideoID: videoID, Err: err.Error()})
+		c.currentState = StateError
+		c.send(Event{State: StateError, VideoID: videoID, Err: err.Error()})
 		return err
 	}
 
@@ -164,7 +200,7 @@ func (c *Controller) PlayVideo(ctx context.Context, videoID string) error {
 	c.curIsLive = track.IsLive
 	if err := c.player.Play(track.URL); err != nil {
 		log.Printf("[audio] Player.Play failed: %v", err)
-		c.emit(Event{State: StateError, VideoID: videoID, Err: err.Error()})
+		c.send(Event{State: StateError, VideoID: videoID, Err: err.Error()})
 		return err
 	}
 
@@ -186,7 +222,7 @@ func (c *Controller) Resume() error {
 		return err
 	}
 	c.currentState = StatePlaying
-	c.emit(Event{State: StatePlaying, VideoID: c.activeVideoID})
+	c.send(Event{State: StatePlaying, VideoID: c.activeVideoID})
 	return nil
 }
 

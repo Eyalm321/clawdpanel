@@ -441,6 +441,12 @@ func (a *App) ToggleBrandMenu() {
 		}
 		x := int(float64(mon.Left)/scale) + 6
 		y := int(float64(mon.Top)/scale) + a.cfg.BarHeight
+		if mon.DockEdge == "bottom" {
+			// Bar hugs the monitor's bottom edge (Linux stacked layouts):
+			// drop the menu just ABOVE the bar instead of below the top.
+			_, menuH := a.menuWindow.Size()
+			y = int(float64(int(mon.Top)+mon.Height)/scale) - a.cfg.BarHeight - menuH
+		}
 		a.menuWindow.SetPosition(x, y)
 	}
 	a.menuWindow.Focus()
