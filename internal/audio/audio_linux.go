@@ -22,6 +22,13 @@ static void set_playbin_uri(GstElement* playbin, const char* uri) {
 static void set_playbin_volume(GstElement* playbin, double volume) {
 	g_object_set(playbin, "volume", volume, NULL);
 }
+
+// Audio-only: GST_PLAY_FLAG_AUDIO (1<<1) | GST_PLAY_FLAG_SOFT_VOLUME (1<<4).
+// The bar never renders video, and decoding the stream's video track would
+// also require codecs Fedora doesn't ship (H.264).
+static void set_playbin_audio_only(GstElement* playbin) {
+	g_object_set(playbin, "flags", (1 << 1) | (1 << 4), NULL);
+}
 */
 import "C"
 import (
@@ -41,26 +48,32 @@ func initGStreamer() {
 }
 
 type LinuxPlayer struct {
-	mu       sync.Mutex
-	emit     func(Event)
-	playbin  *C.GstElement
-	stopChan chan struct{}
-	wg       sync.WaitGroup
-	playing  bool
+	mu        sync.Mutex
+	emit      func(Event)
+	playbin   *C.GstElement
+	stopChan  chan struct{}
+	wg        sync.WaitGroup
+	playing   bool
+	live      bool // source gave NO_PREROLL: never manage buffering states
+	buffering bool // mid-rebuffer: suppress paused/playing emit flicker
 }
 
 func New(emit func(Event)) (Player, error) {
 	initGStreamer()
 
-	cPlaybin := C.CString("playbin3")
+	// Classic playbin (not playbin3): playbin3 dropped the GstPlayFlags
+	// "flags" property, and we rely on it for audio-only playback.
+	cPlaybin := C.CString("playbin")
 	cPlaybinName := C.CString("radio-playbin")
 	defer C.free(unsafe.Pointer(cPlaybin))
 	defer C.free(unsafe.Pointer(cPlaybinName))
 
 	playbin := C.gst_element_factory_make(cPlaybin, cPlaybinName)
 	if playbin == nil {
-		return nil, fmt.Errorf("failed to create GStreamer playbin3 element (is gstreamer1.0-plugins-base installed?)")
+		return nil, fmt.Errorf("failed to create GStreamer playbin element (is gstreamer1.0-plugins-base installed?)")
 	}
+
+	C.set_playbin_audio_only(playbin)
 
 	p := &LinuxPlayer{
 		emit:     emit,
@@ -90,6 +103,10 @@ func (p *LinuxPlayer) Play(url string) error {
 	if ret == C.GST_STATE_CHANGE_FAILURE {
 		return fmt.Errorf("failed to set GStreamer state to PLAYING")
 	}
+	// True live sources preroll with NO_PREROLL and must never be paused for
+	// buffering; everything else (including HLS) is managed in monitorBus.
+	p.live = ret == C.GST_STATE_CHANGE_NO_PREROLL
+	p.buffering = false
 
 	p.playing = true
 	p.emit(Event{State: StateLoading})
@@ -174,7 +191,7 @@ func (p *LinuxPlayer) monitorBus() {
 			msg := C.gst_bus_timed_pop_filtered(
 				bus,
 				100*C.GST_MSECOND,
-				C.GST_MESSAGE_ERROR|C.GST_MESSAGE_EOS|C.GST_MESSAGE_STATE_CHANGED,
+				C.GST_MESSAGE_ERROR|C.GST_MESSAGE_EOS|C.GST_MESSAGE_STATE_CHANGED|C.GST_MESSAGE_BUFFERING,
 			)
 			if msg == nil {
 				continue
@@ -201,19 +218,51 @@ func (p *LinuxPlayer) monitorBus() {
 				// can auto-advance. Livestreams never reach EOS.
 				p.emit(Event{State: StateEnded})
 
+			case C.GST_MESSAGE_BUFFERING:
+				// Network streams must sit in PAUSED until the buffer fills,
+				// then resume — without this the pipeline stalls in preroll
+				// and playback never starts. gst-launch does this dance for
+				// you; applications must do it themselves.
+				var percent C.gint
+				C.gst_message_parse_buffering(msg, &percent)
+				p.mu.Lock()
+				live, wantPlaying := p.live, p.playing
+				p.buffering = percent < 100
+				p.mu.Unlock()
+				if !live {
+					if percent < 100 {
+						C.gst_element_set_state(p.playbin, C.GST_STATE_PAUSED)
+					} else if wantPlaying {
+						C.gst_element_set_state(p.playbin, C.GST_STATE_PLAYING)
+					}
+				}
+
 			case C.GST_MESSAGE_STATE_CHANGED:
 				var oldState, newState, pendingState C.GstState
 				C.gst_message_parse_state_changed(msg, &oldState, &newState, &pendingState)
 
-				// Only process state changes of the playbin itself
-				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) {
+				// Only process settled state changes of the playbin itself —
+				// transitional states (pending != VOID) and buffering-induced
+				// pauses would flicker the UI through paused/loading.
+				p.mu.Lock()
+				buffering := p.buffering
+				p.mu.Unlock()
+				if C.get_message_src(msg) == (*C.GstObject)(unsafe.Pointer(p.playbin)) &&
+					pendingState == C.GST_STATE_VOID_PENDING && !buffering {
 					switch newState {
 					case C.GST_STATE_PLAYING:
 						p.emit(Event{State: StatePlaying})
 					case C.GST_STATE_PAUSED:
 						p.emit(Event{State: StatePaused})
 					case C.GST_STATE_READY, C.GST_STATE_NULL:
-						p.emit(Event{State: StateIdle})
+						// Play() bounces through READY when (re)starting a
+						// track — only a real stop should read as idle.
+						p.mu.Lock()
+						stopped := !p.playing
+						p.mu.Unlock()
+						if stopped {
+							p.emit(Event{State: StateIdle})
+						}
 					}
 				}
 			}
