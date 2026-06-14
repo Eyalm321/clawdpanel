@@ -35,14 +35,12 @@ type WindowOps interface {
 	ClipTop(width, height, topClip int)
 	Show()
 	Hide()
-	// SetBounds moves+resizes the still-mapped window in one shot. Used by the
-	// event-driven peek-collapse (resize to a sliver instead of unmapping) so the
-	// window keeps a live surface that can receive the reveal-triggering enter.
-	SetBounds(x, y, width, height int)
-	// SetOpacity sets window opacity (0..1). _NET_WM_WINDOW_OPACITY is a pure
-	// compositor blend and does NOT affect X11 input hit-testing, so the peek
-	// strip can be made fully invisible (0) while still catching the reveal enter.
-	SetOpacity(o float64)
+	// SetSize resizes the still-mapped window IN PLACE (top-left anchored). Used by
+	// the event-driven peek-collapse (shrink to a sliver instead of unmapping) so
+	// the window keeps a live surface that can receive the reveal-triggering enter.
+	// It must not move the window (a move re-places it onto the primary monitor
+	// under Mutter HiDPI), so the sliver stays on the bar's current monitor.
+	SetSize(width, height int)
 	SetClickThrough(enabled bool)
 	CursorPos() (x, y int)
 	FullScreenActive(mon platform.MonitorInfo) bool
@@ -74,8 +72,7 @@ func (p platformOps) MoveTo(x, y int)                  { platform.MoveWindow(p.h
 func (p platformOps) ClipTop(w, h, t int)              { platform.SetWindowClipTop(p.hwnd, w, h, t) }
 func (p platformOps) Show()                            { platform.ShowWindow(p.hwnd) }
 func (p platformOps) Hide()                            { platform.HideWindow(p.hwnd) }
-func (p platformOps) SetBounds(x, y, w, h int)         { platform.SetWindowBounds(p.hwnd, x, y, w, h) }
-func (p platformOps) SetOpacity(o float64)             { platform.SetOpacity(p.hwnd, o) }
+func (p platformOps) SetSize(w, h int)                 { platform.SetWindowSize(p.hwnd, w, h) }
 func (p platformOps) SetClickThrough(e bool)           { platform.SetClickThrough(p.hwnd, e) }
 func (p platformOps) CursorPos() (int, int)            { return platform.GetCursorPos() }
 func (p platformOps) FullScreenActive(m platform.MonitorInfo) bool {
@@ -124,11 +121,6 @@ type Controller struct {
 	// reveal enter). hoverFlag is the latched hover state fed by SetHover.
 	eventMode atomic.Bool
 	hoverFlag atomic.Bool
-
-	// expandOpacity is the opacity restored when the peek strip expands back to the
-	// full bar; collapsing sets opacity 0 so the strip vanishes while still
-	// catching the reveal enter. Defaults to 1 (set from config via SetExpandOpacity).
-	expandOpacity float64
 }
 
 // New builds a production Controller bound to the given native window handle.
@@ -147,7 +139,6 @@ func newWithOps(ops WindowOps) *Controller {
 		frame:         defaultFrame,
 		collapseDelay: defaultCollapseDelay,
 		poll:          defaultPoll,
-		expandOpacity: 1.0,
 	}
 }
 
@@ -218,14 +209,6 @@ func (c *Controller) SetEventMode(on bool) { c.eventMode.Store(on) }
 // The poll loop (Tick) consumes it via cursorOverBar, so the grace timer,
 // pinned/fullscreen precedence and the rest of the policy keep working unchanged.
 func (c *Controller) SetHover(over bool) { c.hoverFlag.Store(over) }
-
-// SetExpandOpacity sets the opacity the bar is restored to when the peek strip
-// expands (the user's configured window opacity). The collapsed strip is always 0.
-func (c *Controller) SetExpandOpacity(o float64) {
-	c.mu.Lock()
-	c.expandOpacity = o
-	c.mu.Unlock()
-}
 
 // SetUserClickThrough updates the user click-through preference and re-applies it
 // (used by the tray toggle, which changes nothing about geometry).
@@ -313,20 +296,21 @@ func (c *Controller) SetExpanded(expanded bool) {
 func (c *Controller) peekResize(s snapshot, expanded bool) {
 	x := int(s.mon.Left)
 	width := widthOf(s.mon)
-	y := onScreenY(s)
-	c.animGen.Add(1) // supersede any in-flight slide
+	h := peekStripHeight // a thin, still-locatable sliver (a fully-hidden one is unfindable)
+	c.animGen.Add(1)     // supersede any in-flight slide
 	if expanded {
-		c.mu.Lock()
-		o := c.expandOpacity
-		c.mu.Unlock()
+		h = s.barHeight
 		c.ops.Show()
-		c.ops.SetBounds(x, y, width, s.barHeight)
-		c.ops.SetOpacity(o)
-	} else {
-		// Collapse to a thin sliver. It MUST stay visible enough to locate (a
-		// fully-invisible strip is unfindable — there's no cue where to hover to
-		// reveal), so keep it at the configured opacity, just very short.
-		c.ops.SetBounds(x, y, width, peekStripHeight)
+	}
+	// Resize first. SetSize is top-left anchored (xdotool windowsize) and must NOT
+	// move the window — a move re-places it onto primary under Mutter HiDPI.
+	c.ops.SetSize(width, h)
+	// Top-docked: the strip already sits at the top resting Y, no move needed.
+	// Bottom-docked: top-anchored shrink leaves the strip clinging to the top of
+	// the bar area, so move it down to hug the bottom edge (xdotool windowmove
+	// keeps the monitor; only wmctrl move+resize jumps).
+	if bottomDocked(s) {
+		c.ops.MoveTo(x, int(s.mon.Top)+s.mon.Height-h)
 	}
 }
 

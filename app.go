@@ -252,7 +252,6 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	eventMode := runtime.GOOS == "linux" && platform.Backend() == platform.BackendX11 && platform.IsWaylandSession()
 	if eventMode {
 		a.revealCtrl.SetEventMode(true)
-		a.revealCtrl.SetExpandOpacity(a.cfg.Opacity) // restore this opacity when revealing; strip collapses to 0
 	}
 	platform.ApplyBarStyles(hwnd)
 
@@ -897,6 +896,12 @@ func (a *App) SetMonitor(index int) error {
 	if a.hwnd != 0 {
 		platform.DockToMonitor(a.hwnd, a.monitors[index], a.cfg.BarHeight, a.cfg.AppBarMode)
 		platform.PushdownReconfigure(a.monitors[index], a.cfg.BarHeight)
+		// Update the reveal controller's monitor too — otherwise auto-hide
+		// collapse/reveal keeps using the OLD monitor's geometry and snaps the
+		// bar back to it.
+		if a.revealCtrl != nil {
+			a.revealCtrl.Configure(a.monitors[index], a.cfg.BarHeight, a.cfg.Pinned, a.cfg.ClickThrough)
+		}
 	}
 	if a.trayMgr != nil {
 		a.trayMgr.SetMonitorChecked(index)

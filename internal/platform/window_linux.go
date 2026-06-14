@@ -196,18 +196,18 @@ func SetWindowHeight(hwnd uintptr, physHeight int) {
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
 }
 
-// SetWindowBounds moves+resizes the window in one wmctrl call — the event-mode
-// peek collapse (resize to a 2px sliver) and expand (back to full bar height).
-// Uses the same logical-coord convention as DockToMonitor, which already copes
-// with Mutter's HiDPI scaling, so the strip lands where the bar docks. X11 only;
-// Wayland clients can't self-position, so it's a no-op on the other backends.
-func SetWindowBounds(hwnd uintptr, x, y, width, height int) {
+// SetWindowSize resizes the window IN PLACE (top-left anchored) — the event-mode
+// peek collapse (shrink to a 2px sliver) and expand (back to full bar height). It
+// deliberately uses xdotool windowsize, NOT wmctrl -e: a wmctrl move+resize under
+// Mutter's HiDPI scaling re-places the window onto the primary monitor, whereas
+// xdotool resizes without moving, so the sliver stays on the bar's monitor. X11
+// only; Wayland clients can't self-size that way, so it's a no-op elsewhere.
+func SetWindowSize(hwnd uintptr, width, height int) {
 	if hwnd == 0 || Backend() != BackendX11 {
 		return
 	}
 	id := fmt.Sprintf("0x%08x", uint32(hwnd))
-	geom := fmt.Sprintf("0,%d,%d,%d,%d", x, y, width, height)
-	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
+	_ = exec.Command("xdotool", "windowsize", id, strconv.Itoa(width), strconv.Itoa(height)).Run()
 }
 
 func SetOpacity(hwnd uintptr, opacity float64) {

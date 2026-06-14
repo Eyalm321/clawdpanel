@@ -74,8 +74,8 @@ func TestEventModeHoverDrivesPeek(t *testing.T) {
 	if c.Expanded() {
 		t.Fatal("bar should collapse after the pointer leaves + grace")
 	}
-	if b, ok := fake.lastBounds(); !ok || b[3] != peekStripHeight {
-		t.Errorf("collapse should resize to a %dpx peek strip, got %v (ok=%v)", peekStripHeight, b, ok)
+	if sz, ok := fake.lastSize(); !ok || sz[1] != peekStripHeight {
+		t.Errorf("collapse should resize to a %dpx peek strip, got %v (ok=%v)", peekStripHeight, sz, ok)
 	}
 	if n := fake.hideCount(); n != 0 {
 		t.Errorf("event mode must not unmap the window (Hide called %d times)", n)
@@ -87,8 +87,8 @@ func TestEventModeHoverDrivesPeek(t *testing.T) {
 	if !c.Expanded() {
 		t.Fatal("hover on the peek strip should reveal the bar")
 	}
-	if b, _ := fake.lastBounds(); b[3] != barHeight {
-		t.Errorf("reveal should resize back to bar height %d, got %v", barHeight, b)
+	if sz, _ := fake.lastSize(); sz[1] != barHeight {
+		t.Errorf("reveal should resize back to bar height %d, got %v", barHeight, sz)
 	}
 }
 
