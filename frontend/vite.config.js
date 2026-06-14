@@ -1,8 +1,41 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+
+// Dev-only: serve the Wails runtime as a real module. The generated bindings
+// import `/wails/runtime.js`, which the embedded Go asset server provides in a
+// production build but vite's dev server does not — so under `wails3 dev` the
+// import fails to load and the frontend renders blank. Load the exact runtime
+// the Go side bundles (resolved from the wails module in the Go cache) so it's
+// always version-matched — no npm-package drift. Production builds keep treating
+// it as external (see build.rollupOptions.external below).
+function wailsRuntimeDev() {
+  const RUNTIME_ID = '/wails/runtime.js';
+  let code = null;
+  const loadRuntime = () => {
+    if (code !== null) return code;
+    const moduleDir = execSync('go list -m -f "{{.Dir}}" github.com/wailsapp/wails/v3', {
+      cwd: __dirname,
+      encoding: 'utf-8',
+    }).trim();
+    code = readFileSync(`${moduleDir}/internal/assetserver/bundledassets/runtime.js`, 'utf-8');
+    return code;
+  };
+  return {
+    name: 'wails-runtime-dev',
+    apply: 'serve',
+    resolveId(id) {
+      if (id === RUNTIME_ID) return RUNTIME_ID;
+    },
+    load(id) {
+      if (id === RUNTIME_ID) return loadRuntime();
+    },
+  };
+}
 
 // `wails3 dev` assigns the frontend dev-server port and proxies the embedded
 // asset server to it. It exposes that as FRONTEND_DEVSERVER_URL (and, on some
@@ -24,6 +57,7 @@ const devPort = devServerPort();
 
 export default defineConfig({
   base: './',
+  plugins: [wailsRuntimeDev()],
   server: devPort ? { port: devPort, strictPort: true } : undefined,
   resolve: {
     alias: {
