@@ -216,6 +216,7 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	time.Sleep(300 * time.Millisecond)
 
 	hwnd := uintptr(window.NativeWindow())
+	gtkWin := hwnd // the GTK window pointer, captured before the X11-id overwrite below
 	if runtime.GOOS == "linux" {
 		switch platform.Backend() {
 		case platform.BackendLayerShell:
@@ -244,6 +245,15 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	}
 	a.hwnd = hwnd
 	a.revealCtrl = reveal.New(hwnd)
+	// On a Wayland session the global cursor poll is frozen (XWayland delivers no
+	// pointer position over native Wayland surfaces), so drive reveal from GTK
+	// motion events + peek-strip collapse instead. Decide before Configure/Init so
+	// they start in peek mode.
+	eventMode := runtime.GOOS == "linux" && platform.Backend() == platform.BackendX11 && platform.IsWaylandSession()
+	if eventMode {
+		a.revealCtrl.SetEventMode(true)
+		a.revealCtrl.SetExpandOpacity(a.cfg.Opacity) // restore this opacity when revealing; strip collapses to 0
+	}
 	platform.ApplyBarStyles(hwnd)
 
 	a.monitors = platform.GetMonitors()
@@ -268,6 +278,12 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 		// cursor) without animating, snapping the window off-screen + hiding it
 		// if starting collapsed so nothing flashes on launch.
 		a.revealCtrl.Init()
+		if eventMode {
+			// Attach the GTK motion controller to the real GTK window (gtkWin, not
+			// the X11 id) and feed its hover transitions into the reveal machine.
+			platform.RegisterHoverCallback(a.revealCtrl.SetHover)
+			platform.AttachHoverController(gtkWin)
+		}
 	} else if len(a.monitors) > 0 {
 		// Graceful degradation: no window handle. Either native Wayland (no
 		// docking/positioning available) or the X11 backend where wmctrl couldn't

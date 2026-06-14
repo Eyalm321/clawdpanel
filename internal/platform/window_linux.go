@@ -196,6 +196,20 @@ func SetWindowHeight(hwnd uintptr, physHeight int) {
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
 }
 
+// SetWindowBounds moves+resizes the window in one wmctrl call — the event-mode
+// peek collapse (resize to a 2px sliver) and expand (back to full bar height).
+// Uses the same logical-coord convention as DockToMonitor, which already copes
+// with Mutter's HiDPI scaling, so the strip lands where the bar docks. X11 only;
+// Wayland clients can't self-position, so it's a no-op on the other backends.
+func SetWindowBounds(hwnd uintptr, x, y, width, height int) {
+	if hwnd == 0 || Backend() != BackendX11 {
+		return
+	}
+	id := fmt.Sprintf("0x%08x", uint32(hwnd))
+	geom := fmt.Sprintf("0,%d,%d,%d,%d", x, y, width, height)
+	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
+}
+
 func SetOpacity(hwnd uintptr, opacity float64) {
 	if hwnd == 0 || isWayland() {
 		return
@@ -290,13 +304,13 @@ func isFullScreenActiveUncached(mon MonitorInfo) bool {
 		cy >= int(mon.Top) && cy < int(mon.Top)+mon.Height
 }
 
-// AutoHideSupported reports whether the slide/hide + cursor-poll primitives work
-// for the active backend. Only X11 (xdotool poll + move/map) supports auto-hide
-// today. Layer-shell CAN host it (exclusive-zone toggle + a hot-edge surface) but
-// needs an event-driven cursor source first (no global pointer on Wayland), so it
-// docks always-visible for now; plain Wayland can't position windows at all. In
-// both Wayland modes the reveal machine degrades to always-visible-when-pinned
-// rather than silently hiding the bar.
+// AutoHideSupported reports whether auto-hide is possible on the active backend.
+// True on the X11 backend — which includes GNOME Wayland via XWayland: the global
+// xdotool cursor poll is frozen there, but auto-hide no longer depends on it. On a
+// Wayland session the reveal machine runs in event mode (GTK motion controller +
+// peek-strip collapse), which works fine under XWayland; on a real X11 session it
+// uses the classic global poll. Plain Wayland (no XWayland) and layer-shell stay
+// always-visible for now (no event-mode wiring yet there).
 func AutoHideSupported() bool { return Backend() == BackendX11 }
 
 // lastCursor caches the last successful cursor read. The reveal machine polls

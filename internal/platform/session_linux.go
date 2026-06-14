@@ -86,6 +86,21 @@ func isX11Backend(env func(string) string) bool {
 // call before GTK init (main.go does, to make the GDK decision).
 func WantsXWayland() bool { return isX11Backend(os.Getenv) }
 
+// waylandSession reports whether the compositor is Wayland, regardless of whether
+// WE run as a Wayland or XWayland client. It's the signal for "the global cursor
+// poll (xdotool) is unreliable": under XWayland on a Wayland session, the X server
+// stops receiving pointer updates once the cursor is over native Wayland surfaces,
+// so xdotool getmouselocation FREEZES — which silently breaks the reveal machine's
+// hover detection. So auto-hide is only trustworthy on a genuine X11 session.
+func waylandSession() bool {
+	return os.Getenv("WAYLAND_DISPLAY") != "" &&
+		!strings.EqualFold(strings.TrimSpace(os.Getenv("XDG_SESSION_TYPE")), "x11")
+}
+
+// IsWaylandSession reports whether the compositor is Wayland (so the bar should
+// use event-driven hover + peek collapse instead of the frozen global cursor poll).
+func IsWaylandSession() bool { return waylandSession() }
+
 var (
 	backendOnce sync.Once
 	backend     LinuxBackend

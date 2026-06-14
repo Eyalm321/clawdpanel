@@ -49,6 +49,49 @@ func TestTickGraceDelaysCollapse(t *testing.T) {
 	}
 }
 
+// In event mode (Wayland) the hover signal comes from SetHover (the GTK motion
+// controller), not the cursor poll, and collapse resizes to a peek strip instead
+// of hiding — so its surface survives to receive the reveal-triggering enter.
+func TestEventModeHoverDrivesPeek(t *testing.T) {
+	fake := &fakeOps{autoHide: true}
+	clk := newManualClock()
+	c := newTestController(fake, clk, nil)
+	c.collapseDelay = 100 * time.Millisecond
+	c.SetEventMode(true)
+	c.Configure(testMon(), barHeight, false, false) // unpinned
+
+	c.SetHover(true) // pointer on the bar — no cursor coords involved
+	c.Init()
+	if !c.Expanded() {
+		t.Fatal("Init with hover should start expanded")
+	}
+
+	// Pointer leaves → grace timer → collapse to a peek strip (not hide).
+	c.SetHover(false)
+	c.Tick()
+	clk.advance(c.collapseDelay + time.Millisecond)
+	c.Tick()
+	if c.Expanded() {
+		t.Fatal("bar should collapse after the pointer leaves + grace")
+	}
+	if b, ok := fake.lastBounds(); !ok || b[3] != peekStripHeight {
+		t.Errorf("collapse should resize to a %dpx peek strip, got %v (ok=%v)", peekStripHeight, b, ok)
+	}
+	if n := fake.hideCount(); n != 0 {
+		t.Errorf("event mode must not unmap the window (Hide called %d times)", n)
+	}
+
+	// Pointer re-enters the peek strip → reveal (resize back to full bar height).
+	c.SetHover(true)
+	c.Tick()
+	if !c.Expanded() {
+		t.Fatal("hover on the peek strip should reveal the bar")
+	}
+	if b, _ := fake.lastBounds(); b[3] != barHeight {
+		t.Errorf("reveal should resize back to bar height %d, got %v", barHeight, b)
+	}
+}
+
 // A cursor that returns before the grace delay cancels the pending collapse and
 // restarts the timer, so a later tick past the ORIGINAL deadline doesn't collapse.
 func TestTickCursorReturnCancelsCollapse(t *testing.T) {
