@@ -217,18 +217,28 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 
 	hwnd := uintptr(window.NativeWindow())
 	if runtime.GOOS == "linux" {
-		// Linux v1: the reveal controller's hide/show + cursor-poll primitives
-		// are no-ops here and GNOME needs an extension to show the tray icon,
-		// so nothing would ever surface the Hidden-by-default window. Show it
-		// before resolving the X id below — wmctrl only lists mapped windows.
-		window.Show()
-		// NativeWindow returns a GTK pointer on Linux, not an X11 window ID —
-		// resolve the real X id (wmctrl PID lookup) so the xprop/wmctrl-based
-		// docking path operates on the right window.
-		if id, err := platform.FindWindowByPID(); err == nil {
-			hwnd = id
-		} else {
-			log.Printf("platform: %v; docking disabled", err)
+		switch platform.Backend() {
+		case platform.BackendLayerShell:
+			// Become a wlr-layer-shell surface BEFORE the window is mapped
+			// (gtk_layer_init_for_window must run pre-realize), then show. hwnd
+			// stays the GTK window pointer — the layer-shell ops take that, not an
+			// X11 id.
+			log.Printf("platform: layer-shell backend active; docking via wlr-layer-shell")
+			platform.InitLayerShell(hwnd)
+			window.Show()
+		case platform.BackendX11:
+			// NativeWindow returns a GTK pointer, not an X11 id. Show first
+			// (wmctrl only lists mapped windows), then resolve the real X id for
+			// the xprop/wmctrl docking path.
+			window.Show()
+			if id, err := platform.FindWindowByPID(); err == nil {
+				hwnd = id
+			} else {
+				log.Printf("platform: %v; falling back to a floating bar", err)
+				hwnd = 0
+			}
+		default: // BackendWaylandPlain — no docking/positioning is possible.
+			window.Show()
 			hwnd = 0
 		}
 	}
@@ -243,7 +253,9 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 
 	if a.hwnd != 0 && len(a.monitors) > 0 {
 		platform.DockToMonitor(a.hwnd, a.monitors[a.cfg.Monitor], a.cfg.BarHeight, a.cfg.AppBarMode)
-		if a.cfg.AppBarMode && a.cfg.Pinned {
+		// PushdownEnable is the X11/GNOME-Shell strut helper; layer-shell reserves
+		// space itself (exclusive zone) and plain Wayland can't, so it's X11-only.
+		if a.cfg.AppBarMode && a.cfg.Pinned && platform.Backend() == platform.BackendX11 {
 			go func() {
 				if err := platform.PushdownEnable(a.monitors[a.cfg.Monitor], a.cfg.BarHeight); err != nil {
 					log.Printf("[pushdown] Enable failed: %v", err)

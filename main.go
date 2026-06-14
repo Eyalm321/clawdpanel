@@ -25,7 +25,7 @@ func main() {
 	// works as an X11 client. Force GDK_BACKEND=x11 ONLY for that backend; the
 	// native-Wayland backends (opt in via CLAWDPANEL_NO_XWAYLAND / CLAWDPANEL_BACKEND)
 	// must stay on GTK's Wayland backend.
-	if runtime.GOOS == "linux" && platform.DetectBackend() == platform.BackendX11 {
+	if runtime.GOOS == "linux" && platform.WantsXWayland() {
 		os.Setenv("GDK_BACKEND", "x11")
 	}
 
