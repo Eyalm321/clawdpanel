@@ -8,4 +8,4 @@ Icon=clawdpanel
 Categories=Utility;Development;
 Terminal=false
 StartupNotify=false
-StartupWMClass=__clawdpanel__
+StartupWMClass=clawdpanel
