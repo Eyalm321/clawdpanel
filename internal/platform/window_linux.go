@@ -41,6 +41,12 @@ func isWayland() bool {
 // windows — so we retry briefly to ride out the show → map round-trip.
 func findWindowID() uint32 {
 	winIDOnce.Do(func() {
+		// Only X11/XWayland clients have an X window id wmctrl can resolve.
+		// On native Wayland the surface is invisible to wmctrl; skip the retry
+		// loop so we degrade immediately instead of spawning wmctrl ten times.
+		if Backend() != BackendX11 {
+			return
+		}
 		pid := strconv.Itoa(os.Getpid())
 		for attempt := 0; attempt < 10; attempt++ {
 			out, err := exec.Command("wmctrl", "-lp").Output()
@@ -88,7 +94,22 @@ func ApplyBarStyles(hwnd uintptr) {
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-b", "add,above").Run()
 }
 
+// InitLayerShell converts the GTK window into a wlr-layer-shell surface. Only
+// meaningful on BackendLayerShell, and MUST be called before the window is
+// shown/realized (gtk_layer_init_for_window requirement).
+func InitLayerShell(hwnd uintptr) {
+	if Backend() == BackendLayerShell {
+		layerShellInitWindow(hwnd)
+	}
+}
+
 func DockToMonitor(hwnd uintptr, mon MonitorInfo, barHeight int, appBarMode bool) {
+	if Backend() == BackendLayerShell {
+		// Compositor-managed: anchor full-width to the monitor edge and reserve
+		// barHeight via the exclusive zone. No geometry/strut math, no handle id.
+		layerShellDock(hwnd, mon.DockEdge == "bottom", barHeight)
+		return
+	}
 	if hwnd == 0 {
 		return
 	}
@@ -173,6 +194,20 @@ func SetWindowHeight(hwnd uintptr, physHeight int) {
 	id := fmt.Sprintf("0x%08x", uint32(hwnd))
 	geom := fmt.Sprintf("0,%d,%d,%d,%d", l, t, w, physHeight)
 	_ = exec.Command("wmctrl", "-i", "-r", id, "-e", geom).Run()
+}
+
+// SetWindowSize resizes the window IN PLACE (top-left anchored) — the event-mode
+// peek collapse (shrink to a 2px sliver) and expand (back to full bar height). It
+// deliberately uses xdotool windowsize, NOT wmctrl -e: a wmctrl move+resize under
+// Mutter's HiDPI scaling re-places the window onto the primary monitor, whereas
+// xdotool resizes without moving, so the sliver stays on the bar's monitor. X11
+// only; Wayland clients can't self-size that way, so it's a no-op elsewhere.
+func SetWindowSize(hwnd uintptr, width, height int) {
+	if hwnd == 0 || Backend() != BackendX11 {
+		return
+	}
+	id := fmt.Sprintf("0x%08x", uint32(hwnd))
+	_ = exec.Command("xdotool", "windowsize", id, strconv.Itoa(width), strconv.Itoa(height)).Run()
 }
 
 func SetOpacity(hwnd uintptr, opacity float64) {
@@ -269,9 +304,14 @@ func isFullScreenActiveUncached(mon MonitorInfo) bool {
 		cy >= int(mon.Top) && cy < int(mon.Top)+mon.Height
 }
 
-// AutoHideSupported: the slide/hide primitives below are wired up via xdotool,
-// so the reveal machine's hover auto-hide and pin toggle work on Linux.
-func AutoHideSupported() bool { return true }
+// AutoHideSupported reports whether auto-hide is possible on the active backend.
+// True on the X11 backend — which includes GNOME Wayland via XWayland: the global
+// xdotool cursor poll is frozen there, but auto-hide no longer depends on it. On a
+// Wayland session the reveal machine runs in event mode (GTK motion controller +
+// peek-strip collapse), which works fine under XWayland; on a real X11 session it
+// uses the classic global poll. Plain Wayland (no XWayland) and layer-shell stay
+// always-visible for now (no event-mode wiring yet there).
+func AutoHideSupported() bool { return Backend() == BackendX11 }
 
 // lastCursor caches the last successful cursor read. The reveal machine polls
 // at 12.5Hz; a transient xdotool failure must not read as "cursor gone" — that
@@ -315,24 +355,27 @@ func GetCursorPos() (int, int) {
 // ResetDwmFrame is a Windows-only concept; no-op elsewhere.
 func ResetDwmFrame(hwnd uintptr) {}
 
-// HideWindow / ShowWindow unmap/map the X window (collapse/reveal).
+// HideWindow / ShowWindow unmap/map the X window (collapse/reveal). X11 only —
+// hwnd is an X window id there; on the layer-shell/plain backends it's a GTK
+// pointer (or zero) and auto-hide is disabled, so these are no-ops.
 func HideWindow(hwnd uintptr) {
-	if hwnd == 0 {
+	if hwnd == 0 || Backend() != BackendX11 {
 		return
 	}
 	_ = exec.Command("xdotool", "windowunmap", fmt.Sprintf("0x%08x", uint32(hwnd))).Run()
 }
 
 func ShowWindow(hwnd uintptr) {
-	if hwnd == 0 {
+	if hwnd == 0 || Backend() != BackendX11 {
 		return
 	}
 	_ = exec.Command("xdotool", "windowmap", fmt.Sprintf("0x%08x", uint32(hwnd))).Run()
 }
 
-// MoveWindow repositions the bar (the reveal machine's slide animation).
+// MoveWindow repositions the bar (the reveal machine's slide animation). X11 only;
+// Wayland clients can't self-position, so this is a no-op on the other backends.
 func MoveWindow(hwnd uintptr, x, y int) {
-	if hwnd == 0 {
+	if hwnd == 0 || Backend() != BackendX11 {
 		return
 	}
 	_ = exec.Command("xdotool", "windowmove", fmt.Sprintf("0x%08x", uint32(hwnd)),

@@ -24,6 +24,7 @@ type fakeOps struct {
 	autoHide         bool
 	fullScreen       bool
 	cursorX, cursorY int
+	sizes            [][2]int // recorded SetSize calls {w,h}
 }
 
 func (f *fakeOps) WindowRect() (int, int, int, int) {
@@ -40,6 +41,20 @@ func (f *fakeOps) MoveTo(x, y int) {
 func (f *fakeOps) ClipTop(w, h, t int) {}
 func (f *fakeOps) Show()               { f.mu.Lock(); f.shows++; f.mu.Unlock() }
 func (f *fakeOps) Hide()               { f.mu.Lock(); f.hides++; f.mu.Unlock() }
+func (f *fakeOps) SetSize(w, h int) {
+	f.mu.Lock()
+	f.w, f.h = w, h
+	f.sizes = append(f.sizes, [2]int{w, h})
+	f.mu.Unlock()
+}
+func (f *fakeOps) lastSize() ([2]int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sizes) == 0 {
+		return [2]int{}, false
+	}
+	return f.sizes[len(f.sizes)-1], true
+}
 func (f *fakeOps) SetClickThrough(e bool) {
 	f.mu.Lock()
 	f.clickSets = append(f.clickSets, e)

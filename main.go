@@ -6,6 +6,8 @@ import (
 	"os"
 	"runtime"
 
+	"clawdpanel/internal/platform"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
@@ -16,12 +18,14 @@ var assets embed.FS
 // trayIconBytes is defined per-OS in icon_{windows,darwin,linux}.go.
 
 func main() {
-	// Linux v1: run under XWayland even on Wayland sessions. Wayland gives
-	// apps no way to self-position or stay always-on-top (and GNOME/Mutter
-	// has no layer-shell for third parties), so the whole docking path —
-	// wmctrl geometry, _NET_WM_WINDOW_TYPE_DOCK, struts — only works as an
-	// X11 client. Must be set before GTK initializes.
-	if runtime.GOOS == "linux" && os.Getenv("CLAWDPANEL_NO_XWAYLAND") == "" {
+	// Pick the Linux window-management backend once, before GTK initializes.
+	// Default is XWayland (BackendX11): Wayland gives apps no way to self-position
+	// or reserve space, and GNOME/Mutter has no layer-shell for third parties, so
+	// the docking path (wmctrl geometry, _NET_WM_WINDOW_TYPE_DOCK, struts) only
+	// works as an X11 client. Force GDK_BACKEND=x11 ONLY for that backend; the
+	// native-Wayland backends (opt in via CLAWDPANEL_NO_XWAYLAND / CLAWDPANEL_BACKEND)
+	// must stay on GTK's Wayland backend.
+	if runtime.GOOS == "linux" && platform.WantsXWayland() {
 		os.Setenv("GDK_BACKEND", "x11")
 	}
 

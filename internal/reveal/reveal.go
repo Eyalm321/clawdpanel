@@ -8,12 +8,20 @@ package reveal
 
 import (
 	"context"
+	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"clawdpanel/internal/platform"
 )
+
+// revealDebug, when CLAWDPANEL_REVEAL_DEBUG is set, makes cursorOverBar log the
+// live cursor position, the configured monitor's computed reveal zone, and the
+// hit-test result every poll — for diagnosing why auto-hide reveal doesn't fire
+// (cursor/monitor geometry mismatches on multi-monitor Linux).
+var revealDebug = os.Getenv("CLAWDPANEL_REVEAL_DEBUG") != ""
 
 // WindowOps is the narrow set of OS window operations the reveal machine needs.
 // The production adapter binds a single window handle and forwards to
@@ -27,6 +35,12 @@ type WindowOps interface {
 	ClipTop(width, height, topClip int)
 	Show()
 	Hide()
+	// SetSize resizes the still-mapped window IN PLACE (top-left anchored). Used by
+	// the event-driven peek-collapse (shrink to a sliver instead of unmapping) so
+	// the window keeps a live surface that can receive the reveal-triggering enter.
+	// It must not move the window (a move re-places it onto the primary monitor
+	// under Mutter HiDPI), so the sliver stays on the bar's current monitor.
+	SetSize(width, height int)
 	SetClickThrough(enabled bool)
 	CursorPos() (x, y int)
 	FullScreenActive(mon platform.MonitorInfo) bool
@@ -43,6 +57,10 @@ const (
 	// unreliable on small windows, so we poll the OS cursor rather than trust
 	// JS mouse events for the hide trigger.
 	defaultPoll = 80 * time.Millisecond
+	// peekStripHeight is the sliver the bar collapses to in event/peek mode. It
+	// stays mapped so its own surface still receives the pointer-enter that
+	// triggers reveal (the global cursor poll is dead on Wayland).
+	peekStripHeight = 2
 )
 
 // platformOps is the production WindowOps: it binds the window handle and
@@ -54,6 +72,7 @@ func (p platformOps) MoveTo(x, y int)                  { platform.MoveWindow(p.h
 func (p platformOps) ClipTop(w, h, t int)              { platform.SetWindowClipTop(p.hwnd, w, h, t) }
 func (p platformOps) Show()                            { platform.ShowWindow(p.hwnd) }
 func (p platformOps) Hide()                            { platform.HideWindow(p.hwnd) }
+func (p platformOps) SetSize(w, h int)                 { platform.SetWindowSize(p.hwnd, w, h) }
 func (p platformOps) SetClickThrough(e bool)           { platform.SetClickThrough(p.hwnd, e) }
 func (p platformOps) CursorPos() (int, int)            { return platform.GetCursorPos() }
 func (p platformOps) FullScreenActive(m platform.MonitorInfo) bool {
@@ -95,6 +114,13 @@ type Controller struct {
 	// animGen is bumped on every SetExpanded; a running animateY exits once it
 	// sees the bump, so a new slide cleanly supersedes an in-flight one.
 	animGen atomic.Uint64
+
+	// eventMode swaps the cursor source from the frozen global poll to GTK
+	// motion-controller hover events (Wayland), and makes collapse resize to a
+	// peek strip instead of unmapping (so the surface survives to catch the
+	// reveal enter). hoverFlag is the latched hover state fed by SetHover.
+	eventMode atomic.Bool
+	hoverFlag atomic.Bool
 }
 
 // New builds a production Controller bound to the given native window handle.
@@ -173,6 +199,17 @@ func (c *Controller) Configure(mon platform.MonitorInfo, barHeight int, pinned, 
 	c.ApplyClickThrough()
 }
 
+// SetEventMode switches the controller to event-driven hover (the GTK motion
+// controller feeds SetHover) with peek-strip collapse — used on Wayland sessions
+// where the global cursor poll is frozen. Off keeps the classic global poll +
+// full hide (real X11 / Windows / macOS).
+func (c *Controller) SetEventMode(on bool) { c.eventMode.Store(on) }
+
+// SetHover latches the pointer-over-bar state from the GTK motion controller.
+// The poll loop (Tick) consumes it via cursorOverBar, so the grace timer,
+// pinned/fullscreen precedence and the rest of the policy keep working unchanged.
+func (c *Controller) SetHover(over bool) { c.hoverFlag.Store(over) }
+
 // SetUserClickThrough updates the user click-through preference and re-applies it
 // (used by the tray toggle, which changes nothing about geometry).
 func (c *Controller) SetUserClickThrough(enabled bool) {
@@ -190,7 +227,7 @@ func (c *Controller) Init() {
 	s := snapshot{c.mon, c.barHeight, c.pinned, c.userClickThrough, false}
 	c.mu.Unlock()
 
-	expanded := s.pinned || c.cursorOverBar(s)
+	expanded := s.pinned || !c.ops.AutoHideSupported() || c.cursorOverBar(s)
 	s.expanded = expanded
 	c.mu.Lock()
 	c.expanded = expanded
@@ -198,11 +235,15 @@ func (c *Controller) Init() {
 
 	c.ApplyClickThrough()
 	if !expanded {
-		c.ops.MoveTo(int(s.mon.Left), offScreenY(s))
-		// Full clip so even if a monitor sits above, the window can't spill
-		// onto it before Hide takes effect.
-		c.ops.ClipTop(widthOf(s.mon), s.barHeight, s.barHeight)
-		c.ops.Hide()
+		if c.eventMode.Load() {
+			c.peekResize(s, false)
+		} else {
+			c.ops.MoveTo(int(s.mon.Left), offScreenY(s))
+			// Full clip so even if a monitor sits above, the window can't spill
+			// onto it before Hide takes effect.
+			c.ops.ClipTop(widthOf(s.mon), s.barHeight, s.barHeight)
+			c.ops.Hide()
+		}
 	}
 }
 
@@ -232,6 +273,12 @@ func (c *Controller) SetExpanded(expanded bool) {
 
 	c.ApplyClickThrough()
 
+	// Event/peek mode: no slide — resize between full bar and peek strip in place.
+	if c.eventMode.Load() {
+		c.peekResize(s, expanded)
+		return
+	}
+
 	target := onScreenY(s)
 	if !expanded {
 		target = offScreenY(s)
@@ -241,6 +288,30 @@ func (c *Controller) SetExpanded(expanded bool) {
 		c.ops.Show() // reveal the off-screen window so MoveTo can slide it in
 	}
 	go c.animateY(s, target, gen, !expanded)
+}
+
+// peekResize is the event-mode collapse/expand: resize the still-mapped window
+// between the full bar height and a peek sliver, in place (no slide, no unmap),
+// so the window keeps a live surface that receives the reveal-triggering enter.
+func (c *Controller) peekResize(s snapshot, expanded bool) {
+	x := int(s.mon.Left)
+	width := widthOf(s.mon)
+	h := peekStripHeight // a thin, still-locatable sliver (a fully-hidden one is unfindable)
+	c.animGen.Add(1)     // supersede any in-flight slide
+	if expanded {
+		h = s.barHeight
+		c.ops.Show()
+	}
+	// Resize first. SetSize is top-left anchored (xdotool windowsize) and must NOT
+	// move the window — a move re-places it onto primary under Mutter HiDPI.
+	c.ops.SetSize(width, h)
+	// Top-docked: the strip already sits at the top resting Y, no move needed.
+	// Bottom-docked: top-anchored shrink leaves the strip clinging to the top of
+	// the bar area, so move it down to hug the bottom edge (xdotool windowmove
+	// keeps the monitor; only wmctrl move+resize jumps).
+	if bottomDocked(s) {
+		c.ops.MoveTo(x, int(s.mon.Top)+s.mon.Height-h)
+	}
 }
 
 // ApplyClickThrough sets the window's click-through from the user preference OR,
@@ -259,7 +330,33 @@ func (c *Controller) ApplyClickThrough() {
 // the user can reveal it from the screen edge; on Windows/Linux WorkTopOffset is
 // 0 and this is just [Top, Top+BarHeight].
 func (c *Controller) cursorOverBar(s snapshot) bool {
+	// Event mode: the GTK motion controller already told us whether the pointer is
+	// over the bar (or its peek strip) — no global cursor query (it's frozen on
+	// Wayland), no geometry hit-test.
+	if c.eventMode.Load() {
+		over := c.hoverFlag.Load()
+		if revealDebug {
+			log.Printf("[reveal] eventMode hover=%v", over)
+		}
+		return over
+	}
 	cx, cy := c.ops.CursorPos()
+	over := c.hitTestBar(s, cx, cy)
+	if revealDebug {
+		width := widthOf(s.mon)
+		yLo, yHi := int(s.mon.Top), int(s.mon.Top)+s.mon.WorkTopOffset+s.barHeight
+		if bottomDocked(s) {
+			yHi = int(s.mon.Top) + s.mon.Height
+			yLo = yHi - s.barHeight
+		}
+		log.Printf("[reveal] cursor=(%d,%d) mon=%q L=%d T=%d W=%d off=%d bottom=%v zone x[%d,%d) y[%d,%d) -> over=%v",
+			cx, cy, s.mon.Name, int(s.mon.Left), int(s.mon.Top), width, s.mon.WorkTopOffset, bottomDocked(s),
+			int(s.mon.Left), int(s.mon.Left)+width, yLo, yHi, over)
+	}
+	return over
+}
+
+func (c *Controller) hitTestBar(s snapshot, cx, cy int) bool {
 	if cx < 0 && cy < 0 {
 		return false // platform stub (no cursor source)
 	}
@@ -327,7 +424,11 @@ func (c *Controller) Tick() {
 		}
 		return
 	}
-	if s.pinned {
+	// Pinned, or auto-hide isn't trustworthy on this platform/session (e.g.
+	// XWayland on a Wayland session, where the global cursor poll freezes) → keep
+	// the bar shown. Without the AutoHideSupported guard the loop would chase a
+	// stale cursor and leave the bar stuck shown or hidden.
+	if s.pinned || !c.ops.AutoHideSupported() {
 		if !c.Expanded() {
 			c.SetExpanded(true)
 		}
