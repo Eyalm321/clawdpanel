@@ -273,8 +273,11 @@ tasks:
 
   frontend:dev:npm:
     dir: frontend
+    # Only pass --port when wails3 provided VITE_PORT; an empty value makes vite's
+    # CLI abort ("option `--port` value is missing"). When it's absent, vite.config
+    # binds the port from FRONTEND_DEVSERVER_URL instead.
     cmds:
-      - npm run dev -- --port {{.VITE_PORT}} --strictPort
+      - npm run dev{{if .VITE_PORT}} -- --port {{.VITE_PORT}} --strictPort{{end}}
 
   frontend:dev:yarn:
     dir: frontend

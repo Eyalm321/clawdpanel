@@ -4,8 +4,27 @@ import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
+// `wails3 dev` assigns the frontend dev-server port and proxies the embedded
+// asset server to it. It exposes that as FRONTEND_DEVSERVER_URL (and, on some
+// versions, VITE_PORT). Bind whichever it gives us so the Go side can connect;
+// without this the dev server comes up on vite's default port and `wails3 dev`
+// reports "unable to connect to frontend server".
+function devServerPort() {
+  const url = process.env.FRONTEND_DEVSERVER_URL;
+  if (url) {
+    try {
+      const p = Number(new URL(url).port);
+      if (p) return p;
+    } catch { /* ignore malformed URL */ }
+  }
+  const vp = Number(process.env.VITE_PORT);
+  return vp || undefined;
+}
+const devPort = devServerPort();
+
 export default defineConfig({
   base: './',
+  server: devPort ? { port: devPort, strictPort: true } : undefined,
   resolve: {
     alias: {
       // Resolve the runtime to the copy the Go binary serves at /wails/
