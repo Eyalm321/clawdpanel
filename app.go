@@ -256,6 +256,18 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 		// cursor) without animating, snapping the window off-screen + hiding it
 		// if starting collapsed so nothing flashes on launch.
 		a.revealCtrl.Init()
+	} else if len(a.monitors) > 0 {
+		// Graceful degradation: no window handle. Either native Wayland (no
+		// docking/positioning available) or the X11 backend where wmctrl couldn't
+		// enumerate our XWayland surface — the latter is what silently hid the bar
+		// before. We can't dock or reserve space, but the bar must NEVER be
+		// invisible: it's already shown above, so configure the reveal machine
+		// pinned (forces expanded) and skip the dock/strut/opacity ops that need a
+		// handle. AutoHideSupported() is false on plain Wayland, so it won't try to
+		// hide; on X11-with-no-handle we force pinned to the same effect.
+		a.revealCtrl.Configure(a.monitors[a.cfg.Monitor], a.cfg.BarHeight, true, false)
+		a.revealCtrl.Init()
+		a.warnPlatformDegraded()
 	}
 
 	a.runTray()
@@ -264,6 +276,26 @@ func (a *App) domReady(app *application.App, window *application.WebviewWindow) 
 	go a.revealCtrl.Run(a.app.Context())
 	// Start the Claude status watcher poller
 	go a.watchClaudeStatus(a.app.Context())
+}
+
+// warnPlatformDegraded surfaces the no-dock / no-auto-hide situation instead of
+// failing silently — the old code path just logged "docking disabled" and left an
+// undocked, sometimes-invisible bar. Always logs; also emits a platform:warning
+// the frontend renders as a dismissible banner (the bar is guaranteed visible, so
+// the warning can't be missed). The frontend dedupes so it shows once.
+func (a *App) warnPlatformDegraded() {
+	backend := platform.Backend()
+	msg := "Docking and auto-hide are unavailable on this session (" + backend.String() +
+		"). The bar is shown as a floating, always-visible window. On GNOME Wayland " +
+		"this is expected; for a docked/auto-hiding bar use an X11 session."
+	log.Printf("platform: degraded mode (backend=%s): %s", backend, msg)
+	if a.app != nil {
+		a.app.Event.Emit("platform:warning", map[string]string{
+			"kind":    "degraded",
+			"backend": backend.String(),
+			"message": msg,
+		})
+	}
 }
 
 // reveal surfaces the bar, called when the user launches a second instance (which

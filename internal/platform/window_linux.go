@@ -41,6 +41,12 @@ func isWayland() bool {
 // windows — so we retry briefly to ride out the show → map round-trip.
 func findWindowID() uint32 {
 	winIDOnce.Do(func() {
+		// Only X11/XWayland clients have an X window id wmctrl can resolve.
+		// On native Wayland the surface is invisible to wmctrl; skip the retry
+		// loop so we degrade immediately instead of spawning wmctrl ten times.
+		if Backend() != BackendX11 {
+			return
+		}
 		pid := strconv.Itoa(os.Getpid())
 		for attempt := 0; attempt < 10; attempt++ {
 			out, err := exec.Command("wmctrl", "-lp").Output()
@@ -269,9 +275,12 @@ func isFullScreenActiveUncached(mon MonitorInfo) bool {
 		cy >= int(mon.Top) && cy < int(mon.Top)+mon.Height
 }
 
-// AutoHideSupported: the slide/hide primitives below are wired up via xdotool,
-// so the reveal machine's hover auto-hide and pin toggle work on Linux.
-func AutoHideSupported() bool { return true }
+// AutoHideSupported reports whether the slide/hide + cursor-poll primitives work
+// for the active backend. X11 wires them via xdotool, and layer-shell drives them
+// via the compositor; plain Wayland (GNOME/Mutter — no client positioning, no
+// global cursor) cannot, so there the reveal machine degrades to
+// always-visible-when-pinned instead of silently hiding the bar for good.
+func AutoHideSupported() bool { return Backend() != BackendWaylandPlain }
 
 // lastCursor caches the last successful cursor read. The reveal machine polls
 // at 12.5Hz; a transient xdotool failure must not read as "cursor gone" — that
