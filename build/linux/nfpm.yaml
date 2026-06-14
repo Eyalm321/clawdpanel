@@ -43,7 +43,13 @@ overrides:
       - webkitgtk6.0
       - gtk4
       - wmctrl
-      - xorg-x11-utils    # provides xprop
+      # Rich/boolean dep: the package that ships /usr/bin/xprop was renamed.
+      # Fedora 40+ / RHEL 10+ call it `xprop`; older EL shipped `xorg-x11-utils`
+      # (which no longer exists on Fedora — the stale name made the whole dnf5
+      # transaction unresolvable with "Id is out of bitmap range"). libsolv
+      # treats a paren-prefixed Requires with no version flag as a rich dep, so
+      # dnf installs whichever name exists on the target distro.
+      - "(xprop or xorg-x11-utils)"
       - xdotool
       - python3
       - gstreamer1-plugins-base
