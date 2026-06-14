@@ -37,7 +37,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          # Read the version straight from go.mod (currently 1.26) so the
+          # toolchain can't drift out of sync. setup-go@v6 defaults
+          # GOTOOLCHAIN=local, so an installed Go older than go.mod's
+          # requirement now fails instead of silently auto-downloading.
+          go-version-file: go.mod
 
       - name: Setup Node
         uses: actions/setup-node@v6
