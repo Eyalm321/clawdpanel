@@ -11,7 +11,8 @@ path = "src/main.rs"
 clawdpanel-types.workspace = true
 clawdpanel-ui = { path = "../ui" }
 clawdpanel-claude-core = { path = "../claude-core" }
-# Station-URL parsing for the settings editor (the ParseStationItem port, S6).
+# Station-URL parsing (ParseStationItem, S6) + the radio playback engine
+# (Controller/proxy/cache/gstreamer/station/RadioBridge wiring, S7).
 clawdpanel-media = { path = "../media" }
 # Linux X11 dock + struts + the cursor-driven reveal machine + single-instance.
 clawdpanel-platform-shell = { path = "../platform-shell" }

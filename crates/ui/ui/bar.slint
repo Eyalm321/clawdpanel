@@ -96,6 +96,207 @@ export global Backend {
     callback quit();
 }
 
+// Radio playback bridge (S7, #54). Properties pushed from the media engine's
+// `radio:state` consumer (filtered to the active station); callbacks drive the
+// StationPlayer / Controller. Replaces the JS `main.js:380-739` radio segment.
+export global RadioBridge {
+    // off | load | on | err (drives the play/pause icon + color).
+    in property <string> status: "off";
+    in property <string> station-name: "---";
+    in property <bool> shuffle-on: false;
+    // Whether the active station can step track-by-track (gates the ‹ › chips).
+    in property <bool> track-nav-active: false;
+    // Cycler arrows show only with >= 2 stations.
+    in property <int> stations-count: 0;
+    // Seek timeline: playhead + length in seconds. dur <= 0 ⇒ livestream (LIVE).
+    in property <float> pos: 0;
+    in property <float> dur: 0;
+    in property <int> volume-pct: 100;
+    // Inline scrubber visibility (toggled by clicking the title).
+    in-out property <bool> timeline-open: false;
+
+    callback play-pause();
+    callback next-station(int); // dir -1 / +1
+    callback track-next();
+    callback track-prev();
+    callback toggle-shuffle();
+    callback seek(float); // fraction 0..1 (the app multiplies by dur)
+    callback cycle-volume();
+}
+
+// Play triangle (off/load/err) or pause bars (on), tinted by status.
+component RadioStatusIcon inherits Rectangle {
+    in property <string> status;
+    in property <color> tint;
+    width: 12px;
+    height: 12px;
+    if root.status != "on" : Path {
+        width: 11px;
+        height: 11px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M8 5v14l11-7z";
+        fill: root.tint;
+    }
+    if root.status == "on" : HorizontalLayout {
+        spacing: 2px;
+        alignment: center;
+        Rectangle { width: 3px; height: 11px; background: root.tint; }
+        Rectangle { width: 3px; height: 11px; background: root.tint; }
+    }
+}
+
+// The radio cluster: « ‹ TITLE/scrubber › » ▶/⏸ shuffle | VOL nn%. Behavior is
+// driven entirely by the RadioBridge global.
+component RadioCluster inherits SegBox {
+    property <color> tint:
+        RadioBridge.status == "err" ? Theme.red :
+        RadioBridge.status == "on" ? Theme.clay :
+        RadioBridge.status == "load" ? Theme.lbl :
+        Theme.muted;
+    property <bool> is-live: RadioBridge.dur <= 0;
+    property <float> frac: RadioBridge.dur > 0
+        ? clamp(RadioBridge.pos / RadioBridge.dur, 0.0, 1.0)
+        : 1.0;
+    property <length> scroll-x: 0;
+    property <string> marquee-text: "NOW PLAYING " + RadioBridge.station-name + " · ";
+
+    // Marquee scroll: nudge the title left while playing, re-entering from the
+    // right edge after a fixed run (Slint has no looping animation, and ids
+    // inside `if` aren't visible here, so we use a fixed reset distance).
+    marquee-timer := Timer {
+        interval: 30ms;
+        running: RadioBridge.status == "on" && !RadioBridge.timeline-open;
+        triggered => {
+            root.scroll-x -= 1px;
+            if (root.scroll-x <= -340px) { root.scroll-x = 168px; }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0;
+        alignment: start;
+
+        // « prev station
+        if RadioBridge.stations-count >= 2 : GhostChip {
+            clicked => { RadioBridge.next-station(-1); }
+            Glyph { text: "«"; font-size: 9px; color: Theme.muted; }
+        }
+        // ‹ prev track (grayed when the station can't step)
+        GhostChip {
+            disabled: !RadioBridge.track-nav-active;
+            clicked => { RadioBridge.track-prev(); }
+            Glyph { text: "‹"; font-size: 9px; color: Theme.muted; }
+        }
+
+        // Title / scrubber viewport (fixed 168px, sized to the scrubber).
+        Rectangle {
+            width: 168px;
+            clip: true;
+
+            // ── marquee / idle title ──
+            if !RadioBridge.timeline-open && RadioBridge.status == "on" : Glyph {
+                x: root.scroll-x;
+                text: root.marquee-text;
+                color: Theme.lbl;
+            }
+            if !RadioBridge.timeline-open && RadioBridge.status != "on" : Glyph {
+                x: 0;
+                text: RadioBridge.station-name == "" ? "CLAUDE FM" : RadioBridge.station-name;
+                color: Theme.lbl;
+            }
+            // Click the title to reveal the scrubber.
+            if !RadioBridge.timeline-open : TouchArea {
+                mouse-cursor: pointer;
+                clicked => { RadioBridge.timeline-open = true; }
+            }
+
+            // ── inline scrubber ──
+            if RadioBridge.timeline-open : Rectangle {
+                // groove
+                Rectangle {
+                    y: (parent.height - 4px) / 2;
+                    height: 4px;
+                    border-radius: 2px;
+                    background: Theme.prog-empty;
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        height: 100%;
+                        width: parent.width * root.frac;
+                        border-radius: 2px;
+                        background: root.tint;
+                    }
+                }
+                if root.is-live : Glyph {
+                    x: 0;
+                    text: "LIVE";
+                    font-size: 9px;
+                    color: Theme.muted;
+                }
+                seek-ta := TouchArea {
+                    mouse-cursor: root.is-live ? MouseCursor.default : MouseCursor.pointer;
+                    clicked => {
+                        if (!root.is-live && self.width > 0) {
+                            RadioBridge.seek(self.mouse-x / self.width);
+                        }
+                    }
+                }
+                // Auto-collapse a few seconds after the cursor leaves the scrubber.
+                collapse-timer := Timer {
+                    interval: 3s;
+                    running: RadioBridge.timeline-open && !seek-ta.has-hover;
+                    triggered => { RadioBridge.timeline-open = false; }
+                }
+            }
+        }
+
+        // › next track
+        GhostChip {
+            disabled: !RadioBridge.track-nav-active;
+            clicked => { RadioBridge.track-next(); }
+            Glyph { text: "›"; font-size: 9px; color: Theme.muted; }
+        }
+        // » next station
+        if RadioBridge.stations-count >= 2 : GhostChip {
+            clicked => { RadioBridge.next-station(1); }
+            Glyph { text: "»"; font-size: 9px; color: Theme.muted; }
+        }
+
+        // play / pause
+        GhostChip {
+            clicked => { RadioBridge.play-pause(); }
+            RadioStatusIcon {
+                status: RadioBridge.status;
+                tint: root.tint;
+            }
+        }
+        // shuffle (clay when on, muted when off)
+        GhostChip {
+            clicked => { RadioBridge.toggle-shuffle(); }
+            Path {
+                width: 10px;
+                height: 10px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
+                fill: transparent;
+                stroke: RadioBridge.shuffle-on ? Theme.clay : Theme.muted;
+                stroke-width: 2.2px;
+            }
+        }
+    }
+    Sep {}
+    Glyph { text: "VOL"; color: Theme.lbl; }
+    Rectangle {
+        vol := Glyph { text: RadioBridge.volume-pct + "%"; color: Theme.clay; }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { RadioBridge.cycle-volume(); }
+        }
+    }
+}
+
 // A weekly / 5H usage segment: LABEL: value [progress] (+ Matrix caret). The
 // value + progress fill take the warn color (clay → #eab308 ≥85% → red ≥95%);
 // the empty meter dots stay muted. Fallout swaps the text meter for the solid
@@ -320,54 +521,8 @@ export component BarWindow inherits Window {
         // flex:1 spacer — pushes the right cluster to the edge.
         Rectangle { horizontal-stretch: 1; }
 
-        // ── Radio cluster chrome (behavior is S7; styled chips rendered here) ──
-        if ClaudeBar.show-radio : SegBox {
-            HorizontalLayout {
-                spacing: 0;
-                alignment: start;
-                GhostChip { Glyph { text: "«"; font-size: 9px; color: Theme.muted; } }
-                GhostChip { disabled: true; Glyph { text: "‹"; font-size: 9px; color: Theme.muted; } }
-                // .radio-title-wrap: fixed 168px viewport (sized to the scrubber).
-                Rectangle {
-                    width: 168px;
-                    clip: true;
-                    Glyph {
-                        x: 0;
-                        text: "CLAUDE FM";
-                        color: Theme.lbl;
-                    }
-                }
-                GhostChip { disabled: true; Glyph { text: "›"; font-size: 9px; color: Theme.muted; } }
-                GhostChip { Glyph { text: "»"; font-size: 9px; color: Theme.muted; } }
-                // play triangle
-                GhostChip {
-                    Path {
-                        width: 11px;
-                        height: 11px;
-                        viewbox-width: 24;
-                        viewbox-height: 24;
-                        commands: "M8 5v14l11-7z";
-                        fill: Theme.muted;
-                    }
-                }
-                // shuffle (stroked crossing arrows)
-                GhostChip {
-                    Path {
-                        width: 10px;
-                        height: 10px;
-                        viewbox-width: 24;
-                        viewbox-height: 24;
-                        commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
-                        fill: transparent;
-                        stroke: Theme.muted;
-                        stroke-width: 2.2px;
-                    }
-                }
-            }
-            Sep {}
-            Glyph { text: "VOL"; color: Theme.lbl; }
-            Glyph { text: "100%"; color: Theme.clay; }
-        }
+        // ── Radio cluster (S7, #54): behavior driven by the RadioBridge global ──
+        if ClaudeBar.show-radio : RadioCluster {}
         if ClaudeBar.sep-visible[6] : Sep {}
 
         // ── Monitor cycler: ◀ MON n ▶ ──

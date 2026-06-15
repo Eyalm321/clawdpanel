@@ -12,6 +12,7 @@
 //! single-instance lock makes a second launch ping the running bar to re-reveal
 //! and exit.
 
+mod radio;
 mod settings;
 
 use clawdpanel_ui::{Backend, ClaudeBar, ClaudeBarData, Theme};
@@ -96,6 +97,15 @@ fn main() -> Result<(), slint::PlatformError> {
     let _ = (&xid, &reveal_slot);
 
     wire_interactions(&w, &ui);
+
+    // Radio playback engine (S7): only stood up when the Radio feature is on,
+    // mirroring Go's `initAudio`. Held for the session (drop tears down the
+    // runtime + gstreamer bus thread).
+    let _radio = if ui.cfg.borrow().features.radio {
+        radio::setup(&w, &ui)
+    } else {
+        None
+    };
 
     spawn_bar_engine(w.as_weak(), ui.shared.clone());
 
