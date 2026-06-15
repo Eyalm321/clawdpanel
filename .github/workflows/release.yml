@@ -46,7 +46,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: '18'
+          # vite 8 (bumped for the security fix) requires Node ^20.19 || >=22.12;
+          # Node 18 lacks the global CustomEvent and fails the frontend build.
+          node-version: '22'
 
       - name: Install Linux build deps
         if: matrix.os == 'ubuntu-latest'
