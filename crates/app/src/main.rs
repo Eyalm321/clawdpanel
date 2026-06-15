@@ -46,7 +46,14 @@ fn main() -> Result<(), slint::PlatformError> {
     // initializes. `CLAWDPANEL_NO_XWAYLAND` is the escape hatch.
     #[cfg(target_os = "linux")]
     if std::env::var_os("CLAWDPANEL_NO_XWAYLAND").is_none() {
+        // winit 0.30 (under Slint) ignores `WINIT_UNIX_BACKEND`, so forcing it is
+        // not enough — the only reliable way to get XWayland is to hide the Wayland
+        // socket: with `WAYLAND_DISPLAY` unset, winit's Wayland backend can't connect
+        // and falls back to X11/XWayland (the winit analogue of Go's GDK_BACKEND=x11).
+        // Verified 2026-06-15: without this the bar runs as a Wayland surface and the
+        // dock/strut/always-on-top path silently no-ops on GNOME.
         std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+        std::env::remove_var("WAYLAND_DISPLAY");
     }
 
     // Single-instance: a second launch fails to take the lock, pings the running
