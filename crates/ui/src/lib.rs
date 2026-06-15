@@ -4,8 +4,16 @@
 //! embedded into the binary at compile time via a file-import in `bar.slint`
 //! (the Slint Rust generator defaults to `EmbedAllResources`), so the HUD
 //! renders identically wherever it ships with no runtime font lookup.
+//!
+//! S4 (#51): the `bar` module below ports the bar's display logic that lives in
+//! Rust (not Slint markup): `normalize_separators` (the JS
+//! `normalizeBarSeparators`), the `░▒▓█` meter split, the warn-threshold ladder,
+//! and `fmt_msgs`. Pure + unit-tested; the app calls these to build
+//! `ClaudeBarData` and the per-separator visibility the bar reads.
 
 slint::include_modules!();
+
+pub mod bar;
 
 /// Hook the app calls once before showing any window.
 ///

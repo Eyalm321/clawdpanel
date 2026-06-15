@@ -1,0 +1,196 @@
+// Shared bar atoms — the small reusable pieces every segment is built from.
+// All colors come from the `Theme` global (see theme.slint); these components
+// never hardcode a palette value. Mirrors the `.seg` / `.sep` / `.arrow` /
+// `.invader` / `.pin-icon` / radio-chip / scanline rules in style.css.
+
+import { Theme, ThemeId } from "theme.slint";
+
+// `.seg { display:flex; align-items:center; gap:5px; padding:0 5px; height:100% }`
+// `@children` flow into the inner row so callers just drop content in.
+export component SegBox inherits Rectangle {
+    height: 100%;
+    HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
+        spacing: 5px;
+        alignment: start;
+        @children
+    }
+}
+
+// Bold Cascadia Mono text — the base for every label/value glyph.
+export component Glyph inherits Text {
+    font-family: "Cascadia Mono";
+    font-size: 11px;
+    font-weight: 700;
+    vertical-alignment: center;
+    // letter-spacing 0.02em on an 11px bar ≈ 0.22px
+    letter-spacing: 0.22px;
+}
+
+// `.sep` "·": muted, 8px, normal weight, opacity .4, 5px padding each side.
+export component Sep inherits Rectangle {
+    height: 100%;
+    HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
+        alignment: center;
+        Text {
+            text: "·";
+            color: Theme.muted;
+            opacity: 0.4;
+            font-family: "Cascadia Mono";
+            font-size: 8px;
+            font-weight: 400;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// `.arrow`: muted clickable glyph that takes the theme accent on hover. Disabled
+// arrows dim to .3 and ignore clicks (matches `.arrow.is-disabled`).
+export component Arrow inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    in property <length> size: 9px;
+    callback clicked;
+    height: 100%;
+    min-width: t.preferred-width + 4px;
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    t := Glyph {
+        x: (parent.width - self.width) / 2;
+        text: root.glyph;
+        font-size: root.size;
+        opacity: root.enabled ? 1.0 : 0.3;
+        color: (ta.has-hover && root.enabled) ? Theme.arrow-hover : Theme.muted;
+    }
+}
+
+// The Space-Invader brand glyph. Slint has no blur filter, so the CSS
+// `drop-shadow(...)` phosphor glow is approximated with a larger, lower-opacity
+// duplicate Path drawn behind the crisp one (ui-slint.md mitigation #1).
+export component Invader inherits Rectangle {
+    in property <bool> hover: false;
+    width: 15px;
+    height: 11px;
+    property <string> d: "M2,0h1v1h-1z M8,0h1v1h-1z M3,1h1v1h-1z M7,1h1v1h-1z M2,2h7v1h-7z M1,3h2v1h-2z M4,3h1v1h-1z M6,3h1v1h-1z M8,3h2v1h-2z M0,4h11v1h-11z M0,5h1v1h-1z M2,5h7v1h-7z M10,5h1v1h-1z M0,6h1v1h-1z M2,6h1v1h-1z M8,6h1v1h-1z M10,6h1v1h-1z M3,7h2v1h-2z M6,7h2v1h-2z";
+    // Glow halo: steady on Fallout/Amber, on-hover for every theme.
+    if Theme.invader-glow || root.hover : Path {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        viewbox-width: 11;
+        viewbox-height: 8;
+        commands: root.d;
+        fill: root.hover ? Theme.clay.with-alpha(0.5) : Theme.invader-fill.with-alpha(0.45);
+    }
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 11;
+        viewbox-height: 8;
+        commands: root.d;
+        fill: Theme.invader-fill;
+    }
+}
+
+// `.pin-icon`: gray when unpinned, clay (theme accent) when pinned. CSS also
+// tilts the glyph 45° when pinned, but Slint `Path` has no rotation-angle and no
+// blur/transform, so the rotate is dropped — the clay/gray swap carries the
+// state (noted as an unmatched effect in the commit message).
+export component PinIcon inherits Rectangle {
+    in property <bool> pinned: true;
+    width: 12px;
+    height: 12px;
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z";
+        fill: root.pinned ? Theme.clay : Theme.muted;
+    }
+}
+
+// Ghost-chip transport key for the radio cluster: faint translucent fill +
+// hairline border + 4px radius, brightening on hover (style.css:397-413).
+export component GhostChip inherits Rectangle {
+    in property <bool> disabled: false;
+    callback clicked;
+    height: 16px;
+    min-width: 16px;
+    border-radius: 4px;
+    background: ta.has-hover && !root.disabled
+        ? rgba(255, 255, 255, 0.11)
+        : root.disabled ? rgba(255, 255, 255, 0.02) : rgba(255, 255, 255, 0.05);
+    border-width: 1px;
+    border-color: ta.has-hover && !root.disabled
+        ? rgba(255, 255, 255, 0.13)
+        : root.disabled ? rgba(255, 255, 255, 0.04) : rgba(255, 255, 255, 0.07);
+    ta := TouchArea {
+        mouse-cursor: root.disabled ? MouseCursor.default : MouseCursor.pointer;
+        clicked => { if (!root.disabled) { root.clicked(); } }
+    }
+    HorizontalLayout {
+        padding-left: 3px;
+        padding-right: 3px;
+        alignment: center;
+        @children
+    }
+}
+
+// CRT scanline overlay (style.css:361-374), gated on Theme.crt by the caller.
+// The CSS layer is a tiled 3px horizontal-scanline gradient PLUS a faint RGB
+// sub-pixel mask, both at opacity .8. Slint gradients can't tile, so the
+// horizontal scanlines are drawn as a row of 1px dark lines every 3px
+// (ui-slint.md mitigation #2). The RGB sub-pixel column mask (alpha .01-.04) is
+// the one piece left out — see commit notes.
+export component Scanlines inherits Rectangle {
+    // ~one 1px dark line per 3px band; 11 covers the 28px (and a bit taller) bar.
+    for i in 11 : Rectangle {
+        x: 0;
+        y: i * 3px;
+        width: 100%;
+        height: 1px;
+        // 0.15 line alpha × 0.8 layer opacity ≈ 0.12.
+        background: rgba(0, 0, 0, 0.12);
+    }
+}
+
+// Fallout's solid outlined Pip-Boy bar (style.css:204-229). 90×8 box with only
+// the right + bottom edges drawn (2px), and a fill that stands 1px proud of the
+// top. Slint borders are uniform, so the two visible edges are child rects.
+export component OutlinedProgress inherits Rectangle {
+    in property <float> pct;            // 0.0..=1.0
+    in property <color> tint: Theme.clay;
+    width: 90px;
+    height: 8px;
+    // bottom edge
+    Rectangle {
+        x: 0;
+        y: parent.height - 2px;
+        width: 100%;
+        height: 2px;
+        background: root.tint;
+    }
+    // right edge
+    Rectangle {
+        x: parent.width - 2px;
+        y: 0;
+        width: 2px;
+        height: 100%;
+        background: root.tint;
+    }
+    // fill: flush bottom-left, 9px tall so it pops 1px above the 8px box.
+    Rectangle {
+        x: 0;
+        y: parent.height - 9px;
+        width: parent.width * clamp(root.pct, 0.0, 1.0);
+        height: 9px;
+        background: root.tint;
+    }
+}

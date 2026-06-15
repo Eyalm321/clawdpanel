@@ -1,9 +1,10 @@
-// ClawdPanel HUD bar -- S2 live data (#49).
+// ClawdPanel HUD bar — S4 (#51): full 1:1 visual-fidelity pass.
 //
-// Data-driven segments bound to the `ClaudeBar` global, which the app fills from
-// `clawdpanel-claude-core` on the ~15s data + 500ms status poll. Themes and
-// docking arrive in later slices (S4). Frameless / always-on-top / opacity are
-// applied from Rust via the winit accessor, not here.
+// The data-driven segments, themes, warn classes, separator-normalization and
+// interactions that mirror `frontend/index.html` + `frontend/src/main.js` +
+// `frontend/src/style.css`. Data arrives on the `ClaudeBar` global (filled from
+// claude-core), the palette on the `Theme` global, and UI→backend intents on the
+// `Backend` global. Docking / framelessness stay in the platform slice.
 
 // Embed Cascadia Mono. A bare file-import of a .ttf makes the Slint compiler
 // bake the font bytes into the binary (Rust output defaults to
@@ -11,136 +12,420 @@
 // "Cascadia Mono"` resolves with no runtime/filesystem dependency.
 import "../fonts/CascadiaMono.ttf";
 
-// The bar payload pushed from claude-core. Percents are carried both as a
-// pre-rounded int (for the label text) and as a 0.0..=1.0 float (for warn-color
-// thresholds); the `*-meter` strings are the 9-char `░▒▓█` bars built in Rust.
+import { Theme, ThemeId } from "theme.slint";
+import { SegBox, Sep, Glyph, Arrow, Invader, PinIcon, GhostChip, Scanlines, OutlinedProgress } from "atoms.slint";
+
+// Re-export the Theme global so Rust can reach it (`ui.global::<Theme>()`) to
+// hold + push the selected `index`.
+export { Theme }
+
+// The bar payload pushed from claude-core (the display-ready shape). Percents are
+// carried both as a 0.0..=1.0 float (for the outlined bar width) and as the
+// pre-formatted value/meter strings the warn-color thresholds drive.
 export struct ClaudeBarData {
-    account-name: string,
-    subscription-type: string,
-    weekly-pct: int,
+    account-name: string,        // already upper-cased
+    subscription-type: string,   // already upper-cased, "" when none
+    period-label: string,        // "WEEKLY" | "MSGS"
+    period-value: string,        // "90%" | "90.5K"
+    period-has-limit: bool,
     period-percent: float,
-    period-msg-limit: int,
-    period-messages: int,
-    weekly-meter: string,
-    hourly-pct: int,
-    hourly-percent: float,
-    hourly-meter: string,
-    hourly-reset-in: string,
+    period-warn-medium: bool,
+    period-warn-high: bool,
+    weekly-fill: string,         // filled ░▒▓█ run
+    weekly-empty: string,        // trailing · run
     show-hourly: bool,
+    hourly-value: string,        // "42%"
+    hourly-percent: float,
+    hourly-warn-medium: bool,
+    hourly-warn-high: bool,
+    hourly-fill: string,
+    hourly-empty: string,
+    hourly-reset-in: string,
     reset-in: string,
     primary-model: string,
-    limit-exceeded: bool,
 }
 
 export global ClaudeBar {
     in property <ClaudeBarData> data;
-    // BUSY / IDLE / OFFLINE, pushed separately on the 500ms path.
+    // BUSY / IDLE / OFFLINE, pushed on the 500ms status path.
     in property <string> status: "IDLE";
+
+    // Counts that gate the cycler arrows (<2 hides them), set at startup.
+    in property <int> accounts-count: 1;
+    in property <int> monitors-count: 1;
+    in property <string> monitor-label: "1";
+
+    // Feature toggles (config plumbing is S6 — default everything on).
+    in property <bool> show-weekly: true;
+    in property <bool> show-radio: true;
+    in property <bool> show-monitor: true;
+    in property <bool> show-theme: true;
+
+    // Pin state (visual; auto-hide wiring is the platform slice).
+    in-out property <bool> pinned: true;
+
+    // step-end blink flag (Matrix caret), toggled by the BarWindow timer.
+    in-out property <bool> blink: false;
+
+    // Per-separator visibility, computed in Rust by `normalize_separators` so a
+    // hidden segment never leaves a doubled/dangling "·". 9 entries, left→right:
+    // [acct|weekly, weekly|reset, reset|5h, 5h|5hreset, 5hreset|model,
+    //  model|status, radio|mon, mon|theme, theme|pin].
+    in property <[bool]> sep-visible;
 }
 
-// One HUD segment: bold Cascadia Mono text in the chosen color.
-component Seg inherits Text {
+// UI → backend intents (style.css / main.js click handlers).
+export global Backend {
+    callback cycle-account(int);
+    callback cycle-monitor(int);
+    callback cycle-theme(int);
+    callback toggle-pin();
+    callback toggle-brand-menu();
+}
+
+// A weekly / 5H usage segment: LABEL: value [progress] (+ Matrix caret). The
+// value + progress fill take the warn color (clay → #eab308 ≥85% → red ≥95%);
+// the empty meter dots stay muted. Fallout swaps the text meter for the solid
+// outlined bar.
+component UsageSeg inherits SegBox {
     in property <string> label;
-    in property <color> tint: #f3f4f6;
-    text: root.label;
-    color: root.tint;
-    font-family: "Cascadia Mono";
-    font-size: 11px;
-    font-weight: 700;
-    vertical-alignment: center;
+    in property <string> value;
+    in property <string> fill;
+    in property <string> empty;
+    in property <float> pct;
+    in property <bool> has-limit;
+    in property <bool> warn-medium;
+    in property <bool> warn-high;
+    in property <bool> show-caret: false;
+
+    property <color> tint:
+        root.warn-high ? Theme.red :
+        root.warn-medium ? #eab308 :
+        Theme.clay;
+
+    Glyph {
+        text: root.label + ":";
+        color: Theme.lbl;
+    }
+    // val-wrap: value + progress, no internal gap (the .prog margin is faked).
+    HorizontalLayout {
+        spacing: 0;
+        alignment: start;
+        Glyph {
+            text: root.value;
+            color: root.tint;
+        }
+        if root.has-limit : Rectangle { width: 4px; }   // .prog margin-left
+        // ── character meter (Claude / Amber / Matrix / Dracula) ──
+        if root.has-limit && !Theme.outlined-progress : HorizontalLayout {
+            spacing: 0;
+            Glyph {
+                text: root.fill;
+                color: root.tint;
+                letter-spacing: -0.11px;
+            }
+            Glyph {
+                text: root.empty;
+                color: Theme.prog-empty;
+                letter-spacing: -0.11px;
+            }
+        }
+        // ── solid outlined bar (Fallout) ──
+        if root.has-limit && Theme.outlined-progress : OutlinedProgress {
+            pct: root.pct;
+            tint: root.tint;
+        }
+        // Matrix blinking █ caret (step-end on/off via the blink flag).
+        if root.show-caret && Theme.blink-caret : Glyph {
+            text: "█";
+            color: root.tint;
+            opacity: ClaudeBar.blink ? 1.0 : 0.0;
+        }
+    }
 }
 
-// Muted dot separator between segments.
-component Sep inherits Seg {
-    label: "·";
-    tint: #6b7280;
+// A plain LABEL: value segment (RESET, 5H RESET).
+component LabelVal inherits SegBox {
+    in property <string> label;
+    in property <string> value;
+    Glyph {
+        text: root.label + ":";
+        color: Theme.lbl;
+    }
+    Glyph {
+        text: root.value;
+        color: Theme.clay;
+    }
 }
 
 export component BarWindow inherits Window {
     title: "ClawdPanel";
-    background: #0b0c0e;
+    background: Theme.bg;
     preferred-width: 1920px;
     preferred-height: 28px;
     min-height: 28px;
 
-    // Warn thresholds match the Go/JS frontend: yellow at >=85%, red at >=95%
-    // or limit-exceeded (only when a percent is actually shown).
-    function weekly-tint() -> color {
-        if (ClaudeBar.data.limit-exceeded
-            || (ClaudeBar.data.period-msg-limit > 0 && ClaudeBar.data.period-percent >= 0.95)) {
-            return #f23959;
-        }
-        if (ClaudeBar.data.period-msg-limit > 0
-            && ClaudeBar.data.period-percent >= 0.85
-            && ClaudeBar.data.period-percent < 0.95) {
-            return #eab308;
-        }
-        return #f3f4f6;
-    }
-
-    function hourly-tint() -> color {
-        if (ClaudeBar.data.hourly-percent >= 0.95) {
-            return #f23959;
-        }
-        if (ClaudeBar.data.hourly-percent >= 0.85) {
-            return #eab308;
-        }
-        return #f3f4f6;
-    }
-
-    function weekly-text() -> string {
-        if (ClaudeBar.data.period-msg-limit > 0) {
-            return "WEEKLY: " + ClaudeBar.data.weekly-pct + "% " + ClaudeBar.data.weekly-meter;
-        }
-        return "MSGS: " + ClaudeBar.data.period-messages;
-    }
-
+    // OFFLINE renders as IDLE on the bar (and stays lavender) — main.js maps it
+    // before setting the class, so the gray `.offline` rule never actually fires.
     function status-text() -> string {
-        // OFFLINE renders as IDLE on the bar (matches the frontend).
-        return ClaudeBar.status == "OFFLINE" ? "IDLE" : ClaudeBar.status;
+        ClaudeBar.status == "OFFLINE" ? "IDLE" : ClaudeBar.status;
+    }
+    function theme-name() -> string {
+        Theme.index == 1 ? "FALLOUT" :
+        Theme.index == 2 ? "AMBER" :
+        Theme.index == 3 ? "MATRIX" :
+        Theme.index == 4 ? "DRACULA" :
+                           "CLAUDE";
+    }
+    // Rust owns the theme index (holds + persists it, mirroring the old
+    // localStorage cross-window behavior): the arrows just fire the intent and
+    // Rust pushes the new `Theme.index` straight back for an instant repaint.
+    function cycle-theme(dir: int) {
+        Backend.cycle-theme(dir);
     }
 
-    function status-tint() -> color {
-        return ClaudeBar.status == "BUSY" ? #4ade80 : #6b7280;
+    // step-end blink for the Matrix caret: a hard on/off toggle rather than an
+    // eased opacity animation (ui-slint.md mitigation #5).
+    blink-timer := Timer {
+        interval: 500ms;
+        running: Theme.blink-caret;
+        triggered => { ClaudeBar.blink = !ClaudeBar.blink; }
     }
 
     HorizontalLayout {
-        spacing: 5px;
+        width: 100%;
+        height: 100%;
         padding-left: 8px;
         padding-right: 8px;
-        alignment: start;
+        spacing: 0;
+        alignment: stretch;
 
-        Seg { label: "▞"; tint: #d77757; }
-        Sep {}
-        Seg {
-            label: ClaudeBar.data.subscription-type == ""
-                ? ClaudeBar.data.account-name
-                : ClaudeBar.data.account-name + " [" + ClaudeBar.data.subscription-type + "]";
+        // ── Brand (always visible) ── padding 0 6px 0 2px, clickable.
+        Rectangle {
+            height: 100%;
+            HorizontalLayout {
+                padding-left: 2px;
+                padding-right: 6px;
+                alignment: center;
+                brand := Invader {
+                    hover: brand-ta.has-hover;
+                }
+            }
+            brand-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { Backend.toggle-brand-menu(); }
+            }
         }
         Sep {}
-        Seg {
-            label: root.weekly-text();
-            tint: root.weekly-tint();
+
+        // ── Account: ◀ NAME [PLAN] ▶ ── (arrows hidden < 2 accounts)
+        SegBox {
+            if ClaudeBar.accounts-count >= 2 : Arrow {
+                glyph: "◀";
+                clicked => { Backend.cycle-account(-1); }
+            }
+            Rectangle {
+                acct := Glyph {
+                    text: ClaudeBar.data.account-name == "" ? "---" : ClaudeBar.data.account-name;
+                    color: Theme.clay;
+                }
+                if ClaudeBar.accounts-count >= 2 : TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Backend.cycle-account(1); }
+                }
+            }
+            if ClaudeBar.data.subscription-type != "" : Glyph {
+                text: "[" + ClaudeBar.data.subscription-type + "]";
+                color: Theme.sub;
+                font-size: 10px;
+            }
+            if ClaudeBar.accounts-count >= 2 : Arrow {
+                glyph: "▶";
+                clicked => { Backend.cycle-account(1); }
+            }
+        }
+        if ClaudeBar.sep-visible[0] : Sep {}
+
+        // ── Weekly / Msgs ──
+        if ClaudeBar.show-weekly : UsageSeg {
+            label: ClaudeBar.data.period-label;
+            value: ClaudeBar.data.period-value;
+            fill: ClaudeBar.data.weekly-fill;
+            empty: ClaudeBar.data.weekly-empty;
+            pct: ClaudeBar.data.period-percent;
+            has-limit: ClaudeBar.data.period-has-limit;
+            warn-medium: ClaudeBar.data.period-warn-medium;
+            warn-high: ClaudeBar.data.period-warn-high;
+            show-caret: true;
+        }
+        if ClaudeBar.sep-visible[1] : Sep {}
+
+        // ── Weekly reset countdown ──
+        if ClaudeBar.show-weekly : LabelVal {
+            label: "RESET";
+            value: ClaudeBar.data.reset-in == "" ? "---" : ClaudeBar.data.reset-in;
+        }
+        if ClaudeBar.sep-visible[2] : Sep {}
+
+        // ── 5-hour rolling usage ──
+        if ClaudeBar.data.show-hourly : UsageSeg {
+            label: "5H";
+            value: ClaudeBar.data.hourly-value;
+            fill: ClaudeBar.data.hourly-fill;
+            empty: ClaudeBar.data.hourly-empty;
+            pct: ClaudeBar.data.hourly-percent;
+            has-limit: true;
+            warn-medium: ClaudeBar.data.hourly-warn-medium;
+            warn-high: ClaudeBar.data.hourly-warn-high;
+        }
+        if ClaudeBar.sep-visible[3] : Sep {}
+
+        // ── 5-hour reset countdown ──
+        if ClaudeBar.data.show-hourly : LabelVal {
+            label: "RESET";
+            value: ClaudeBar.data.hourly-reset-in == "" ? "---" : ClaudeBar.data.hourly-reset-in;
+        }
+        if ClaudeBar.sep-visible[4] : Sep {}
+
+        // ── Primary model ──
+        SegBox {
+            Glyph {
+                text: ClaudeBar.data.primary-model == "" ? "---" : ClaudeBar.data.primary-model;
+                color: Theme.clay;
+            }
+        }
+        if ClaudeBar.sep-visible[5] : Sep {}
+
+        // ── Session status (idle/busy lavender; offline shown as IDLE) ──
+        SegBox {
+            Glyph {
+                text: root.status-text();
+                color: Theme.status-active;
+            }
         }
 
-        if ClaudeBar.data.show-hourly: Sep {}
-        if ClaudeBar.data.show-hourly: Seg {
-            label: "5H: " + ClaudeBar.data.hourly-pct + "% " + ClaudeBar.data.hourly-meter;
-            tint: root.hourly-tint();
-        }
-        if ClaudeBar.data.show-hourly: Sep {}
-        if ClaudeBar.data.show-hourly: Seg {
-            label: "5H RESET: " + ClaudeBar.data.hourly-reset-in;
-        }
+        // flex:1 spacer — pushes the right cluster to the edge.
+        Rectangle { horizontal-stretch: 1; }
 
-        Sep {}
-        Seg { label: "RESET: " + ClaudeBar.data.reset-in; }
-        Sep {}
-        Seg { label: ClaudeBar.data.primary-model == "" ? "---" : ClaudeBar.data.primary-model; }
-        Sep {}
-        Seg {
-            label: root.status-text();
-            tint: root.status-tint();
+        // ── Radio cluster chrome (behavior is S7; styled chips rendered here) ──
+        if ClaudeBar.show-radio : SegBox {
+            HorizontalLayout {
+                spacing: 0;
+                alignment: start;
+                GhostChip { Glyph { text: "«"; font-size: 9px; color: Theme.muted; } }
+                GhostChip { disabled: true; Glyph { text: "‹"; font-size: 9px; color: Theme.muted; } }
+                // .radio-title-wrap: fixed 168px viewport (sized to the scrubber).
+                Rectangle {
+                    width: 168px;
+                    clip: true;
+                    Glyph {
+                        x: 0;
+                        text: "CLAUDE FM";
+                        color: Theme.lbl;
+                    }
+                }
+                GhostChip { disabled: true; Glyph { text: "›"; font-size: 9px; color: Theme.muted; } }
+                GhostChip { Glyph { text: "»"; font-size: 9px; color: Theme.muted; } }
+                // play triangle
+                GhostChip {
+                    Path {
+                        width: 11px;
+                        height: 11px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M8 5v14l11-7z";
+                        fill: Theme.muted;
+                    }
+                }
+                // shuffle (stroked crossing arrows)
+                GhostChip {
+                    Path {
+                        width: 10px;
+                        height: 10px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
+                        fill: transparent;
+                        stroke: Theme.muted;
+                        stroke-width: 2.2px;
+                    }
+                }
+            }
+            Sep {}
+            Glyph { text: "VOL"; color: Theme.lbl; }
+            Glyph { text: "100%"; color: Theme.clay; }
         }
+        if ClaudeBar.sep-visible[6] : Sep {}
+
+        // ── Monitor cycler: ◀ MON n ▶ ──
+        if ClaudeBar.show-monitor : SegBox {
+            if ClaudeBar.monitors-count >= 2 : Arrow {
+                glyph: "◀";
+                clicked => { Backend.cycle-monitor(-1); }
+            }
+            Glyph { text: "MON"; color: Theme.lbl; }
+            Glyph { text: ClaudeBar.monitor-label; color: Theme.clay; }
+            if ClaudeBar.monitors-count >= 2 : Arrow {
+                glyph: "▶";
+                clicked => { Backend.cycle-monitor(1); }
+            }
+        }
+        if ClaudeBar.sep-visible[7] : Sep {}
+
+        // ── Theme cycler: ◀ THEME NAME ▶ ──
+        if ClaudeBar.show-theme : SegBox {
+            Arrow {
+                glyph: "◀";
+                clicked => { root.cycle-theme(-1); }
+            }
+            Glyph { text: "THEME"; color: Theme.lbl; }
+            Rectangle {
+                Glyph {
+                    text: root.theme-name();
+                    color: Theme.clay;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.cycle-theme(1); }
+                }
+            }
+            Arrow {
+                glyph: "▶";
+                clicked => { root.cycle-theme(1); }
+            }
+        }
+        if ClaudeBar.sep-visible[8] : Sep {}
+
+        // ── Pin toggle ──
+        SegBox {
+            Rectangle {
+                HorizontalLayout {
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    alignment: center;
+                    PinIcon { pinned: ClaudeBar.pinned; }
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        ClaudeBar.pinned = !ClaudeBar.pinned;
+                        Backend.toggle-pin();
+                    }
+                }
+            }
+        }
+    }
+
+    // Bottom hairline border (1px rgba(107,114,128,.15)).
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: rgba(107, 114, 128, 0.15);
+    }
+
+    // CRT scanline overlay, drawn on top, gated on the active theme.
+    if Theme.crt : Scanlines {
+        width: 100%;
+        height: 100%;
     }
 }

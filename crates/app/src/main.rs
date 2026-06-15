@@ -12,7 +12,7 @@
 //! single-instance lock makes a second launch ping the running bar to re-reveal
 //! and exit.
 
-use clawdpanel_ui::{ClaudeBar, ClaudeBarData};
+use clawdpanel_ui::{Backend, ClaudeBar, ClaudeBarData, Theme};
 use slint::ComponentHandle;
 // `unstable-winit-030` re-exports winit + the accessor used to drop the server
 // titlebar and pin the bar above everything.
@@ -85,24 +85,89 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(not(target_os = "linux"))]
     let _ = (&xid, &reveal_slot);
 
+    wire_interactions(&w);
+
     spawn_bar_engine(w.as_weak());
 
     // Smoke mode: flash the bar then quit so CI / `CLAWDPANEL_SMOKE=1` runs exit
     // 0 without a human closing the window. Held in scope so the timer isn't
     // dropped (which would cancel it) before the event loop runs.
+    // Smoke mode: step through all five themes (exercising every palette + the
+    // CRT overlay + outlined-progress + caret-timer paths), then quit so CI /
+    // `CLAWDPANEL_SMOKE=1` runs exit 0 without a human closing the window. Held
+    // in scope so the timer isn't dropped (which would cancel it).
     let _smoke_timer = std::env::var("CLAWDPANEL_SMOKE").is_ok().then(|| {
         let t = slint::Timer::default();
+        let weak = w.as_weak();
+        let n = std::rc::Rc::new(std::cell::Cell::new(0_i32));
         t.start(
-            slint::TimerMode::SingleShot,
-            std::time::Duration::from_millis(700),
-            || {
-                let _ = slint::quit_event_loop();
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(120),
+            move || {
+                let i = n.get();
+                n.set(i + 1);
+                if let Some(ui) = weak.upgrade() {
+                    ui.global::<Theme>().set_index(i % 5);
+                }
+                if i >= 6 {
+                    let _ = slint::quit_event_loop();
+                }
             },
         );
         t
     });
 
     w.run()
+}
+
+/// Wires the bar's UI→backend intents (the `Backend` global callbacks) and the
+/// startup-fixed counts. Theme cycling is owned here: Rust holds the index (so a
+/// future slice can persist it the way the old localStorage did) and pushes the
+/// new `Theme.index` straight back for an instant repaint. Account/monitor
+/// cycling are no-ops until config plumbing (S6) gives more than one of each; the
+/// pin's visual toggle is handled in Slint, this just receives the intent (the
+/// auto-hide wiring lives in the platform slice).
+fn wire_interactions(w: &clawdpanel_ui::BarWindow) {
+    let backend = w.global::<Backend>();
+
+    let theme_idx = std::rc::Rc::new(std::cell::Cell::new(0_i32));
+    let weak = w.as_weak();
+    backend.on_cycle_theme(move |dir| {
+        let next = (theme_idx.get() + dir).rem_euclid(5);
+        theme_idx.set(next);
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<Theme>().set_index(next);
+        }
+    });
+
+    backend.on_cycle_account(|_dir| { /* single account until S6 config plumbing */ });
+    backend.on_cycle_monitor(|_dir| { /* monitor switch lands with S6 config */ });
+    backend.on_toggle_pin(|| { /* visual handled in Slint; auto-hide is platform slice */ });
+    backend.on_toggle_brand_menu(|| { /* brand-menu window is a later slice */ });
+
+    // Show the monitor cycler arrows only when more than one screen exists,
+    // mirroring the JS `<2 → hide` gate. Single account for now.
+    let monitor_count = monitor_count();
+    let g = w.global::<ClaudeBar>();
+    g.set_monitors_count(monitor_count);
+}
+
+/// Number of detected monitors (gates the monitor cycler arrows). X11-only;
+/// every other platform reports a single screen until its dock slice lands.
+fn monitor_count() -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        let n = shell::get_monitors().len() as i32;
+        if n < 1 {
+            1
+        } else {
+            n
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        1
+    }
 }
 
 /// Pulls the X11 window id out of a winit window's raw handle (Xlib or Xcb).
@@ -186,6 +251,17 @@ fn spawn_bar_engine(weak: slint::Weak<clawdpanel_ui::BarWindow>) {
                         if let Some(ui) = w.upgrade() {
                             let g = ui.global::<ClaudeBar>();
                             g.set_status(bar.status.clone().into());
+                            // Recompute separator visibility so the data-gated 5H
+                            // pair never leaves a doubled/dangling "·". Features
+                            // default on (config plumbing is S6).
+                            let seps = clawdpanel_ui::bar::bar_separators(
+                                true,
+                                bar.hourly_percent >= 0.0,
+                                true,
+                                true,
+                                true,
+                            );
+                            g.set_sep_visible(slint::ModelRc::new(slint::VecModel::from(seps)));
                             g.set_data(to_claude_bar_data(&bar));
                         }
                     });
@@ -220,40 +296,59 @@ fn spawn_bar_engine(weak: slint::Weak<clawdpanel_ui::BarWindow>) {
 }
 
 /// Maps the claude-core [`BarData`](clawdpanel_claude_core::BarData) onto the
-/// Slint `ClaudeBarData`. Builds the `░▒▓█` meters and rounds the percents for
-/// display; keeps the raw floats for the bar's warn-color thresholds.
+/// Slint `ClaudeBarData`. Builds the display strings (value, split `░▒▓█` meter
+/// parts, formatted counts) and the warn flags via the unit-tested
+/// `clawdpanel_ui::bar` helpers; keeps the raw floats for the outlined bar width.
 fn to_claude_bar_data(b: &clawdpanel_claude_core::BarData) -> ClaudeBarData {
+    use clawdpanel_ui::bar;
+
+    let has_limit = b.period_msg_limit > 0;
     let show_hourly = b.hourly_percent >= 0.0;
-    let weekly_meter = if b.period_msg_limit > 0 {
-        clawdpanel_claude_core::render_meter(b.period_percent)
+
+    let period_value = if has_limit {
+        format!("{}%", (b.period_percent * 100.0).round() as i64)
     } else {
-        String::new()
+        bar::fmt_msgs(b.period_messages)
     };
-    let hourly_meter = if show_hourly {
-        clawdpanel_claude_core::render_meter(b.hourly_percent)
+    let (weekly_fill, weekly_empty) = if has_limit {
+        bar::meter_parts(b.period_percent)
     } else {
-        String::new()
+        (String::new(), String::new())
+    };
+    let wwarn = bar::weekly_warn(has_limit, b.period_percent, b.limit_exceeded);
+
+    let (hourly_value, hourly_fill, hourly_empty, hwarn) = if show_hourly {
+        let (f, e) = bar::meter_parts(b.hourly_percent);
+        (
+            format!("{}%", (b.hourly_percent * 100.0).round() as i64),
+            f,
+            e,
+            bar::hourly_warn(b.hourly_percent),
+        )
+    } else {
+        (String::new(), String::new(), String::new(), bar::Warn::None)
     };
 
     ClaudeBarData {
         account_name: b.account_name.to_uppercase().into(),
-        subscription_type: b.subscription_type.clone().into(),
-        weekly_pct: (b.period_percent * 100.0).round() as i32,
+        subscription_type: b.subscription_type.to_uppercase().into(),
+        period_label: if has_limit { "WEEKLY" } else { "MSGS" }.into(),
+        period_value: period_value.into(),
+        period_has_limit: has_limit,
         period_percent: b.period_percent as f32,
-        period_msg_limit: b.period_msg_limit as i32,
-        period_messages: b.period_messages as i32,
-        weekly_meter: weekly_meter.into(),
-        hourly_pct: if show_hourly {
-            (b.hourly_percent * 100.0).round() as i32
-        } else {
-            0
-        },
-        hourly_percent: b.hourly_percent as f32,
-        hourly_meter: hourly_meter.into(),
-        hourly_reset_in: b.hourly_reset_in.clone().into(),
+        period_warn_medium: wwarn == bar::Warn::Medium,
+        period_warn_high: wwarn == bar::Warn::High,
+        weekly_fill: weekly_fill.into(),
+        weekly_empty: weekly_empty.into(),
         show_hourly,
+        hourly_value: hourly_value.into(),
+        hourly_percent: b.hourly_percent as f32,
+        hourly_warn_medium: hwarn == bar::Warn::Medium,
+        hourly_warn_high: hwarn == bar::Warn::High,
+        hourly_fill: hourly_fill.into(),
+        hourly_empty: hourly_empty.into(),
+        hourly_reset_in: b.hourly_reset_in.clone().into(),
         reset_in: b.reset_in.clone().into(),
         primary_model: b.primary_model.clone().into(),
-        limit_exceeded: b.limit_exceeded,
     }
 }
