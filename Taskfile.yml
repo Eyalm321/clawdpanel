@@ -49,7 +49,11 @@ tasks:
   linux:build:
     summary: Builds the application for Linux
     cmds:
-      - cmd: '"{{.WAILS3}}" task build {{if .ARCH}}ARCH={{.ARCH}}{{end}} {{if .DEV}}DEV={{.DEV}}{{end}} {{if .VERSION}}VERSION={{.VERSION}}{{end}} {{if .EXTRA_TAGS}}EXTRA_TAGS={{.EXTRA_TAGS}}{{end}} {{if .OBFUSCATED}}OBFUSCATED={{.OBFUSCATED}}{{end}} {{if .GARBLE_ARGS}}GARBLE_ARGS={{.GARBLE_ARGS}}{{end}}'
+      # -dir is required: wails3 task auto-detects the repo root and ignores the
+      # cmd's `dir:` CWD, so without it the nested call loads the root Taskfile
+      # (which has no bare `build` task) and fails. CI sidesteps this by running
+      # `wails3 task build` with working-directory: ./linux directly.
+      - cmd: '"{{.WAILS3}}" task -dir {{.TASKFILE_DIR}}/linux build {{if .ARCH}}ARCH={{.ARCH}}{{end}} {{if .DEV}}DEV={{.DEV}}{{end}} {{if .VERSION}}VERSION={{.VERSION}}{{end}} {{if .EXTRA_TAGS}}EXTRA_TAGS={{.EXTRA_TAGS}}{{end}} {{if .OBFUSCATED}}OBFUSCATED={{.OBFUSCATED}}{{end}} {{if .GARBLE_ARGS}}GARBLE_ARGS={{.GARBLE_ARGS}}{{end}}'
         dir: ./linux
 
   linux:package:
@@ -269,8 +273,11 @@ tasks:
 
   frontend:dev:npm:
     dir: frontend
+    # Only pass --port when wails3 provided VITE_PORT; an empty value makes vite's
+    # CLI abort ("option `--port` value is missing"). When it's absent, vite.config
+    # binds the port from FRONTEND_DEVSERVER_URL instead.
     cmds:
-      - npm run dev -- --port {{.VITE_PORT}} --strictPort
+      - npm run dev{{if .VITE_PORT}} -- --port {{.VITE_PORT}} --strictPort{{end}}
 
   frontend:dev:yarn:
     dir: frontend
@@ -308,6 +315,15 @@ tasks:
       - go build -tags server {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.APP_NAME}}-server{{exeExt}}
     vars:
       BUILD_FLAGS: "{{.BUILD_FLAGS}}"
+
+  run:
+    summary: Runs the already-built GUI binary (used by `wails3 dev`)
+    # `wails3 build DEV=true` outputs the binary to ./bin at the repo root, so run
+    # it directly from here. The platform Taskfiles' own `run` assumes CWD is the
+    # platform dir and looks in ./<os>/bin (which is empty) — that mismatch is why
+    # `wails3 dev` couldn't find the binary.
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}{{exeExt}}'
 
   run:server:
     summary: Builds and runs the application in server mode

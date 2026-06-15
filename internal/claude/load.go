@@ -26,6 +26,25 @@ func loadBarDataAt(accountPath, accountName string, now time.Time) (*BarData, er
 	notifs := readNotifications(accountPath)
 	apiUsage := readUsage(accountPath)
 
+	// Prefer authoritative usage fetched straight from Anthropic. It bypasses
+	// any ANTHROPIC_BASE_URL proxy (e.g. Headroom), which typically doesn't relay
+	// /api/oauth/usage and so leaves the captured rate_limits.json frozen. The
+	// file (apiUsage) stays as the offline fallback when the fetch is unavailable.
+	if creds != nil && !liveUsageDisabled() {
+		oauth := creds.ClaudeAiOauth
+		tokenLive := oauth.ExpiresAt == 0 || now.UnixMilli() < oauth.ExpiresAt
+		if oauth.AccessToken != "" && tokenLive {
+			if live := liveUsage(oauth.AccessToken, now); live != nil {
+				// The usage endpoint carries no model id; keep the file's so the
+				// model badge doesn't blank out when live data takes over.
+				if live.ModelID == "" && apiUsage != nil {
+					live.ModelID = apiUsage.ModelID
+				}
+				apiUsage = live
+			}
+		}
+	}
+
 	return computeBarData(accountName, sc, creds, sessions, notifs, apiUsage, now), nil
 }
 

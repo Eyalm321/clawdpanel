@@ -170,23 +170,31 @@ Dynamic and static `OFFLINE` indicators are translated globally into a lavender 
 ## 🧭 Architecture
 
 ```
-Claude Code (CLI)
-       │
-       │  statuslineCommand hook
-       ▼
-~/.claude/rate_limits.json   ←  written every prompt
-       │
-       │  filesystem poll (refreshSeconds)
-       ▼
-ClawdPanel backend (Go)
-       │
-       │  Wails IPC (JSON bindings)
-       ▼
-WebView frontend (HTML/CSS/JS)
-       │
-       └── OS integrations: AppBar / NSWindow / X11 dock,
-                            system tray, autostart, monitors
+Anthropic  GET /api/oauth/usage        Claude Code (CLI)
+   (direct, bypasses any proxy)               │
+       │                                       │  statuslineCommand hook
+       │  OAuth token from .credentials.json   ▼
+       │                              ~/.claude/rate_limits.json   ←  written every prompt
+       │                                       │  (fallback when the direct fetch is unavailable)
+       └──────────────┬────────────────────────┘
+                      │  poll (refreshSeconds), live source preferred
+                      ▼
+            ClawdPanel backend (Go)
+                      │
+                      │  Wails IPC (JSON bindings)
+                      ▼
+            WebView frontend (HTML/CSS/JS)
+                      │
+                      └── OS integrations: AppBar / NSWindow / X11 dock,
+                                           system tray, autostart, monitors
 ```
+
+ClawdPanel fetches usage **directly from Anthropic** (`/api/oauth/usage`, using the
+account's stored OAuth token), hardcoded to the real API host so it keeps updating
+even when Claude Code is pointed at a proxy (e.g. `ANTHROPIC_BASE_URL`, Headroom) that
+doesn't relay rate-limit data. The statusline-written `rate_limits.json` is used as a
+fallback when the direct fetch is unavailable (offline, expired token). Set
+`CLAWDPANEL_DISABLE_LIVE_USAGE=1` to disable the direct fetch and use the file only.
 
 ---
 
