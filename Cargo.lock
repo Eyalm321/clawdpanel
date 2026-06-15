@@ -1016,7 +1016,11 @@ dependencies = [
  "clawdpanel-types",
  "gtk",
  "image",
+ "libc",
  "muda 0.17.2",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tray-icon",
  "x11rb",
 ]

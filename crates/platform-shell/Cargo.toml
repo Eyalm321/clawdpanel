@@ -6,6 +6,13 @@ edition.workspace = true
 [dependencies]
 clawdpanel-types.workspace = true
 
+# Auto-updater (S9): GitHub releases/latest check + streamed installer download.
+# rustls-tls matches claude-core/media; JSON is parsed via serde_json over the
+# response bytes (no reqwest "json" feature), mirroring claude-core's fetch.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 # System tray + menu (Tauri's cross-platform stack); muda items carry the
 # radio/check state. `image` decodes the embedded brand PNG to RGBA for the tray
 # icon (NOT a template icon — see tray.rs).
@@ -25,3 +32,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
 gtk = "0.18"
+
+# `setsid` for the detached installer spawn (the Rust analogue of Go's
+# `SysProcAttr{Setsid: true}`), called from `Command::pre_exec`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

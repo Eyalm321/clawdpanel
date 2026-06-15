@@ -14,6 +14,7 @@
 
 mod radio;
 mod settings;
+mod updater;
 
 use clawdpanel_ui::{Backend, ClaudeBar, ClaudeBarData, Theme};
 use slint::ComponentHandle;
@@ -137,7 +138,15 @@ fn main() -> Result<(), slint::PlatformError> {
                 if i == 5 {
                     settings::close_settings(&state);
                 }
-                if i >= 7 {
+                // Exercise the S9 update window open/close path (synthetic result,
+                // no network) so the Update component's compile + show path runs.
+                if i == 6 {
+                    updater::smoke_open();
+                }
+                if i == 8 {
+                    updater::smoke_close();
+                }
+                if i >= 10 {
                     let _ = slint::quit_event_loop();
                 }
             },
@@ -193,6 +202,11 @@ fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>) {
         let ui = ui.clone();
         backend.on_open_settings(move || settings::open_settings(&ui));
     }
+
+    // Update window (S9): register the shared state on this (the UI) thread, then
+    // wire the tray / brand "Check for updates" action to the off-thread check.
+    updater::init(w.as_weak());
+    backend.on_check_for_updates(updater::check_now);
 
     // Startup-fixed counts + initial feature visibility from the loaded config.
     let g = w.global::<ClaudeBar>();
@@ -396,6 +410,7 @@ fn wire_tray(
                     SetAccount(i) => b.invoke_set_active_account(i as i32),
                     SetMonitor(i) => b.invoke_set_monitor(i as i32),
                     ToggleStartup => b.invoke_toggle_startup(),
+                    CheckForUpdates => b.invoke_check_for_updates(),
                     OpenSettings => b.invoke_open_settings(),
                     Quit => b.invoke_quit(),
                 }

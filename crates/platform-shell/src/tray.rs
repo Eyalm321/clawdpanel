@@ -23,6 +23,7 @@ pub enum TrayAction {
     SetAccount(usize),
     SetMonitor(usize),
     ToggleStartup,
+    CheckForUpdates,
     OpenSettings,
     Quit,
 }
@@ -37,6 +38,7 @@ pub struct Tray {
     account_items: Vec<CheckMenuItem>,
     monitor_items: Vec<CheckMenuItem>,
     startup_item: CheckMenuItem,
+    check_updates_id: MenuId,
     settings_id: MenuId,
     quit_id: MenuId,
 }
@@ -90,6 +92,9 @@ impl Tray {
         let startup_item = CheckMenuItem::new("Start on login", true, start_on_login, None);
         let _ = menu.append(&startup_item);
 
+        let check_updates = MenuItem::new("Check for updates", true, None);
+        let _ = menu.append(&check_updates);
+
         let settings = MenuItem::new("Settings...", true, None);
         let _ = menu.append(&settings);
         let _ = menu.append(&PredefinedMenuItem::separator());
@@ -119,6 +124,7 @@ impl Tray {
             account_items,
             monitor_items,
             startup_item,
+            check_updates_id: check_updates.id().clone(),
             settings_id: settings.id().clone(),
             quit_id: quit.id().clone(),
         })
@@ -138,6 +144,9 @@ impl Tray {
         let id = ev.id();
         if id == &self.quit_id {
             return Some(TrayAction::Quit);
+        }
+        if id == &self.check_updates_id {
+            return Some(TrayAction::CheckForUpdates);
         }
         if id == &self.settings_id {
             return Some(TrayAction::OpenSettings);

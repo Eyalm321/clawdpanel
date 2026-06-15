@@ -14,6 +14,7 @@ pub mod autostart;
 mod monitor;
 mod reveal;
 pub mod single_instance;
+pub mod updater;
 
 // tray-icon's Linux backend (StatusNotifierItem/AppIndicator over GTK) is the
 // only one wired today; Windows/macOS trays land with S10/S11.
