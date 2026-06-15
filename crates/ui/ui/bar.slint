@@ -1,0 +1,56 @@
+// ClawdPanel HUD bar -- S1 visual tracer (#48).
+//
+// Static placeholder segments only; live data, themes and docking arrive in
+// later slices (S4). Frameless / always-on-top / opacity are applied from Rust
+// via the winit accessor, not here.
+
+// Embed Cascadia Mono. A bare file-import of a .ttf makes the Slint compiler
+// bake the font bytes into the binary (Rust output defaults to
+// EmbedAllResources) and register it at component init, so `font-family:
+// "Cascadia Mono"` resolves with no runtime/filesystem dependency.
+import "../fonts/CascadiaMono.ttf";
+
+// One HUD segment: bold Cascadia Mono text in the chosen color.
+component Seg inherits Text {
+    in property <string> label;
+    in property <color> tint: #f3f4f6;
+    text: root.label;
+    color: root.tint;
+    font-family: "Cascadia Mono";
+    font-size: 11px;
+    font-weight: 700;
+    vertical-alignment: center;
+}
+
+// Muted dot separator between segments.
+component Sep inherits Seg {
+    label: "·";
+    tint: #6b7280;
+}
+
+export component BarWindow inherits Window {
+    title: "ClawdPanel";
+    background: #0b0c0e;
+    preferred-width: 1920px;
+    preferred-height: 28px;
+    min-height: 28px;
+
+    HorizontalLayout {
+        spacing: 5px;
+        padding-left: 8px;
+        padding-right: 8px;
+        alignment: start;
+
+        Seg { label: "▞"; tint: #d77757; }
+        Sep {}
+        Seg { label: "MAIN [MAX]"; }
+        Sep {}
+        Seg { label: "WEEKLY: 12% ░▒▓▓░░░░░"; }
+        Sep {}
+        Seg { label: "RESET: 2H 30M"; }
+        Sep {}
+        Seg { label: "OPUS 4.8"; }
+        Sep {}
+        Seg { label: "IDLE"; tint: #6b7280; }
+    }
+}

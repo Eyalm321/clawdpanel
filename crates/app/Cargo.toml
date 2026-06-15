@@ -9,3 +9,10 @@ path = "src/main.rs"
 
 [dependencies]
 clawdpanel-types.workspace = true
+clawdpanel-ui = { path = "../ui" }
+# Needed for the event loop, the smoke-run Timer and the winit-030 accessor used
+# to make the window frameless + always-on-top. Features mirror crates/ui.
+slint = { version = "1", default-features = false, features = [
+    "std", "backend-default", "renderer-femtovg", "renderer-software",
+    "compat-1-2", "unstable-winit-030",
+] }
