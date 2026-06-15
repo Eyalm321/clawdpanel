@@ -11,6 +11,8 @@ path = "src/main.rs"
 clawdpanel-types.workspace = true
 clawdpanel-ui = { path = "../ui" }
 clawdpanel-claude-core = { path = "../claude-core" }
+# Linux X11 dock + struts + the cursor-driven reveal machine + single-instance.
+clawdpanel-platform-shell = { path = "../platform-shell" }
 # Needed for the event loop, the smoke-run Timer and the winit-030 accessor used
 # to make the window frameless + always-on-top. Features mirror crates/ui.
 slint = { version = "1", default-features = false, features = [

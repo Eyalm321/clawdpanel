@@ -648,6 +648,7 @@ name = "clawdpanel-app"
 version = "0.0.0"
 dependencies = [
  "clawdpanel-claude-core",
+ "clawdpanel-platform-shell",
  "clawdpanel-types",
  "clawdpanel-ui",
  "slint",
@@ -682,6 +683,7 @@ name = "clawdpanel-platform-shell"
 version = "0.0.0"
 dependencies = [
  "clawdpanel-types",
+ "x11rb",
 ]
 
 [[package]]
