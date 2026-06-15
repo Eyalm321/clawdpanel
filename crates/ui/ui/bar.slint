@@ -1,14 +1,42 @@
-// ClawdPanel HUD bar -- S1 visual tracer (#48).
+// ClawdPanel HUD bar -- S2 live data (#49).
 //
-// Static placeholder segments only; live data, themes and docking arrive in
-// later slices (S4). Frameless / always-on-top / opacity are applied from Rust
-// via the winit accessor, not here.
+// Data-driven segments bound to the `ClaudeBar` global, which the app fills from
+// `clawdpanel-claude-core` on the ~15s data + 500ms status poll. Themes and
+// docking arrive in later slices (S4). Frameless / always-on-top / opacity are
+// applied from Rust via the winit accessor, not here.
 
 // Embed Cascadia Mono. A bare file-import of a .ttf makes the Slint compiler
 // bake the font bytes into the binary (Rust output defaults to
 // EmbedAllResources) and register it at component init, so `font-family:
 // "Cascadia Mono"` resolves with no runtime/filesystem dependency.
 import "../fonts/CascadiaMono.ttf";
+
+// The bar payload pushed from claude-core. Percents are carried both as a
+// pre-rounded int (for the label text) and as a 0.0..=1.0 float (for warn-color
+// thresholds); the `*-meter` strings are the 9-char `░▒▓█` bars built in Rust.
+export struct ClaudeBarData {
+    account-name: string,
+    subscription-type: string,
+    weekly-pct: int,
+    period-percent: float,
+    period-msg-limit: int,
+    period-messages: int,
+    weekly-meter: string,
+    hourly-pct: int,
+    hourly-percent: float,
+    hourly-meter: string,
+    hourly-reset-in: string,
+    show-hourly: bool,
+    reset-in: string,
+    primary-model: string,
+    limit-exceeded: bool,
+}
+
+export global ClaudeBar {
+    in property <ClaudeBarData> data;
+    // BUSY / IDLE / OFFLINE, pushed separately on the 500ms path.
+    in property <string> status: "IDLE";
+}
 
 // One HUD segment: bold Cascadia Mono text in the chosen color.
 component Seg inherits Text {
@@ -35,6 +63,47 @@ export component BarWindow inherits Window {
     preferred-height: 28px;
     min-height: 28px;
 
+    // Warn thresholds match the Go/JS frontend: yellow at >=85%, red at >=95%
+    // or limit-exceeded (only when a percent is actually shown).
+    function weekly-tint() -> color {
+        if (ClaudeBar.data.limit-exceeded
+            || (ClaudeBar.data.period-msg-limit > 0 && ClaudeBar.data.period-percent >= 0.95)) {
+            return #f23959;
+        }
+        if (ClaudeBar.data.period-msg-limit > 0
+            && ClaudeBar.data.period-percent >= 0.85
+            && ClaudeBar.data.period-percent < 0.95) {
+            return #eab308;
+        }
+        return #f3f4f6;
+    }
+
+    function hourly-tint() -> color {
+        if (ClaudeBar.data.hourly-percent >= 0.95) {
+            return #f23959;
+        }
+        if (ClaudeBar.data.hourly-percent >= 0.85) {
+            return #eab308;
+        }
+        return #f3f4f6;
+    }
+
+    function weekly-text() -> string {
+        if (ClaudeBar.data.period-msg-limit > 0) {
+            return "WEEKLY: " + ClaudeBar.data.weekly-pct + "% " + ClaudeBar.data.weekly-meter;
+        }
+        return "MSGS: " + ClaudeBar.data.period-messages;
+    }
+
+    function status-text() -> string {
+        // OFFLINE renders as IDLE on the bar (matches the frontend).
+        return ClaudeBar.status == "OFFLINE" ? "IDLE" : ClaudeBar.status;
+    }
+
+    function status-tint() -> color {
+        return ClaudeBar.status == "BUSY" ? #4ade80 : #6b7280;
+    }
+
     HorizontalLayout {
         spacing: 5px;
         padding-left: 8px;
@@ -43,14 +112,35 @@ export component BarWindow inherits Window {
 
         Seg { label: "▞"; tint: #d77757; }
         Sep {}
-        Seg { label: "MAIN [MAX]"; }
+        Seg {
+            label: ClaudeBar.data.subscription-type == ""
+                ? ClaudeBar.data.account-name
+                : ClaudeBar.data.account-name + " [" + ClaudeBar.data.subscription-type + "]";
+        }
         Sep {}
-        Seg { label: "WEEKLY: 12% ░▒▓▓░░░░░"; }
+        Seg {
+            label: root.weekly-text();
+            tint: root.weekly-tint();
+        }
+
+        if ClaudeBar.data.show-hourly: Sep {}
+        if ClaudeBar.data.show-hourly: Seg {
+            label: "5H: " + ClaudeBar.data.hourly-pct + "% " + ClaudeBar.data.hourly-meter;
+            tint: root.hourly-tint();
+        }
+        if ClaudeBar.data.show-hourly: Sep {}
+        if ClaudeBar.data.show-hourly: Seg {
+            label: "5H RESET: " + ClaudeBar.data.hourly-reset-in;
+        }
+
         Sep {}
-        Seg { label: "RESET: 2H 30M"; }
+        Seg { label: "RESET: " + ClaudeBar.data.reset-in; }
         Sep {}
-        Seg { label: "OPUS 4.8"; }
+        Seg { label: ClaudeBar.data.primary-model == "" ? "---" : ClaudeBar.data.primary-model; }
         Sep {}
-        Seg { label: "IDLE"; tint: #6b7280; }
+        Seg {
+            label: root.status-text();
+            tint: root.status-tint();
+        }
     }
 }

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "lastComputedDate": "2026-05-20",
+  "dailyActivity": [
+    { "date": "2026-05-15", "messageCount": 100, "sessionCount": 4, "toolCallCount": 40 },
+    { "date": "2026-05-20", "messageCount": 250, "sessionCount": 9, "toolCallCount": 130 }
+  ],
+  "dailyModelTokens": [
+    { "date": "2026-05-15", "tokensByModel": { "claude-opus-4-7": 1000000, "claude-sonnet-4-6": 200000 } },
+    { "date": "2026-05-20", "tokensByModel": { "claude-opus-4-7": 3000000 } }
+  ],
+  "modelUsage": {
+    "claude-opus-4-7": {
+      "inputTokens": 120000,
+      "outputTokens": 60000,
+      "cacheReadInputTokens": 800000,
+      "cacheCreationInputTokens": 90000
+    }
+  },
+  "totalSessions": 13,
+  "totalMessages": 350,
+  "hourCounts": { "9": 12, "14": 21 }
+}

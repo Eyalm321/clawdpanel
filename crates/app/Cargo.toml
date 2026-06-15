@@ -10,9 +10,13 @@ path = "src/main.rs"
 [dependencies]
 clawdpanel-types.workspace = true
 clawdpanel-ui = { path = "../ui" }
+clawdpanel-claude-core = { path = "../claude-core" }
 # Needed for the event loop, the smoke-run Timer and the winit-030 accessor used
 # to make the window frameless + always-on-top. Features mirror crates/ui.
 slint = { version = "1", default-features = false, features = [
     "std", "backend-default", "renderer-femtovg", "renderer-software",
     "compat-1-2", "unstable-winit-030",
 ] }
+# Background poll loop: a tokio runtime on its own thread drives the async
+# load_bar_data (~15s) + get_status (500ms) and pushes results onto the UI.
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
