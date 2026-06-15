@@ -5,4 +5,6 @@
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="${HERE}/usr/bin:${PATH}"
 export GST_PLUGIN_PATH="${HERE}/usr/lib/gstreamer-1.0"
+# Let fontconfig discover the bundled CascadiaMono font (usr/share/fonts).
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 exec "${HERE}/usr/bin/clawdpanel" "$@"

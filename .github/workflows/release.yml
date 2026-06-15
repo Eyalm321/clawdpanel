@@ -15,52 +15,68 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows / macOS legs are TODO stubs until the per-OS platform-shell
+          # implementations land (S10 #57 = Windows, S11 #58 = macOS). The
+          # existing NSIS (build/windows/installer) and pkgbuild (build/darwin)
+          # scripts are kept in-tree and will be rewired here when they land.
           - os: windows-latest
             name: Windows
             artifact: clawdpanel-windows-installer
-            allow_failure: false
           - os: macos-latest
             name: macOS
             artifact: clawdpanel-macos-pkg
-            allow_failure: false
           - os: ubuntu-latest
             name: Linux
             artifact: clawdpanel-linux
-            allow_failure: false
 
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.allow_failure }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          # Read the version straight from go.mod (currently 1.26) so the
-          # toolchain can't drift out of sync. setup-go@v6 defaults
-          # GOTOOLCHAIN=local, so an installed Go older than go.mod's
-          # requirement now fails instead of silently auto-downloading.
-          go-version-file: go.mod
+      # ── TODO stubs (no build): Windows/macOS packaging pending #57 / #58 ──
+      - name: Windows packaging (pending S10 #57)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          echo "::notice title=Windows leg stubbed::The Rust NSIS installer build"
+          echo "is pending S10 (#57 — Windows platform-shell impl). The existing"
+          echo "build/windows/installer/project.nsi + wails_tools.nsh are retained"
+          echo "in-tree and will be rewired into this leg when #57 lands."
+          exit 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '18'
+      - name: macOS packaging (pending S11 #58)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          echo "::notice title=macOS leg stubbed::The Rust .app/.pkg build is"
+          echo "pending S11 (#58 — macOS platform-shell impl, incl. AX pushdown)."
+          echo "The existing build/darwin scripts (pkgbuild) are retained in-tree"
+          echo "and will be rewired into this leg when #58 lands."
+          exit 0
+
+      # ── Linux: the only fully-wired leg for S12-prep ──
+      - name: Setup Rust toolchain
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: Install Linux build deps
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libgtk-4-dev libwebkit2gtk-4.1-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev pkg-config wget file libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-
-      - name: Install Wails CLI
-        shell: bash
-        run: |
-          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.96
+          # Slint + winit (X11) + femtovg build/runtime stack, GStreamer for the
+          # media slice, and wget/file for appimagetool. No GTK/WebKit.
+          sudo apt-get install -y \
+            pkg-config wget file \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 
       - name: Resolve version
         id: version
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
@@ -71,84 +87,17 @@ jobs:
             echo "semver=0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── Windows ──
-      - name: Install NSIS
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Chocolatey first (with retry), then a direct SourceForge zip as
-          # fallback: the community feed 504'd for over an hour during the
-          # v2.2.2 release. The install failure must also FAIL THE STEP -
-          # without an explicit makensis check the trailing PATH append
-          # swallowed the exit code and the build died two steps later with
-          # a bare "makensis not found".
-          $nsisDir = "C:\Program Files (x86)\NSIS"
-          foreach ($attempt in 1..2) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -eq 0 -and (Test-Path "$nsisDir\makensis.exe")) { break }
-            Write-Host "choco install nsis failed (attempt $attempt)"
-            Start-Sleep -Seconds 15
-          }
-          if (-not (Test-Path "$nsisDir\makensis.exe")) {
-            Write-Host "Chocolatey unavailable; falling back to SourceForge zip"
-            $zip = Join-Path $env:TEMP "nsis.zip"
-            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip" -OutFile $zip -UserAgent "Wget/1.21" -MaximumRedirection 10
-            Expand-Archive $zip -DestinationPath "C:\nsis-fallback" -Force
-            $nsisDir = "C:\nsis-fallback\nsis-3.11"
-          }
-          if (-not (Test-Path "$nsisDir\makensis.exe")) { throw "makensis.exe not found after install" }
-          # NSIS isn't added to PATH for the next step's shell either way.
-          $nsisDir | Out-File -Append -Encoding utf8 -FilePath $env:GITHUB_PATH
-
-      - name: Build Windows installer
-        if: matrix.os == 'windows-latest'
-        working-directory: ./windows
-        run: wails3 task package WAILS3=wails3 VERSION=${{ steps.version.outputs.version }}
-
-      - name: Stage Windows artifact
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          Write-Host "Contents of bin:"
-          Get-ChildItem bin
-          New-Item -ItemType Directory -Force dist | Out-Null
-          # Match whatever Wails NSIS produced (filename includes outputfilename + arch).
-          $installer = Get-ChildItem bin -Filter '*installer*.exe' | Select-Object -First 1
-          if (-not $installer) { throw "No installer .exe found in bin" }
-          Copy-Item $installer.FullName "dist\ClawdPanel-${{ steps.version.outputs.semver }}-windows-amd64-setup.exe"
-
-      # ── macOS ──
-      - name: Build macOS app bundle
-        if: matrix.os == 'macos-latest'
-        working-directory: ./darwin
-        run: wails3 task package:universal WAILS3=wails3 VERSION=${{ steps.version.outputs.version }}
-
-      - name: Build macOS .pkg
-        if: matrix.os == 'macos-latest'
-        run: |
-          mkdir -p pkgroot/Applications
-          cp -R bin/ClawdPanel.app pkgroot/Applications/
-          chmod +x build/darwin/scripts/postinstall build/darwin/scripts/preuninstall
-          mkdir -p dist
-          pkgbuild \
-            --root pkgroot \
-            --install-location / \
-            --scripts build/darwin/scripts \
-            --identifier com.clawdpanel.pkg \
-            --version "${{ steps.version.outputs.semver }}" \
-            "dist/ClawdPanel-${{ steps.version.outputs.semver }}-macos-universal.pkg"
-
-
-      - name: Build Linux binary
+      - name: Build Linux release binary
         if: matrix.os == 'ubuntu-latest'
-        working-directory: ./linux
-        run: wails3 task build WAILS3=wails3 EXTRA_TAGS=webkit2_41 VERSION=${{ steps.version.outputs.version }}
-
-      - name: Normalise Linux binary name to lowercase
-        if: matrix.os == 'ubuntu-latest'
-        # Wails honours outputfilename ("ClawdPanel") on Linux too, but the
-        # nfpm.yaml and AppImage script expect lowercase per Linux convention.
-        run: cp bin/ClawdPanel bin/clawdpanel
+        env:
+          # Compiled into the binary via option_env! (crates/app/src/updater.rs);
+          # the analogue of the old Go ldflags `-X main.Version`.
+          CLAWDPANEL_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cargo build --release -p clawdpanel-app
+          # nfpm.yaml + build-appimage.sh expect the binary at ./bin/clawdpanel.
+          mkdir -p bin
+          cp target/release/clawdpanel bin/clawdpanel
 
       - name: Install nfpm
         if: matrix.os == 'ubuntu-latest'
@@ -175,12 +124,12 @@ jobs:
           chmod +x appimagetool-x86_64.AppImage
           sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
           chmod +x build/linux/build-appimage.sh build/linux/AppRun
-          # appimagetool inside Docker / CI needs FUSE workaround:
+          # appimagetool inside Docker / CI needs the FUSE workaround:
           export APPIMAGE_EXTRACT_AND_RUN=1
           OUT_DIR=$PWD/dist ./build/linux/build-appimage.sh
 
-      # ── Upload ──
       - name: Upload artifacts
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
