@@ -1,0 +1,7 @@
+[package]
+name = "clawdpanel-claude-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clawdpanel-types.workspace = true

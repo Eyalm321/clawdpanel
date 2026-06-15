@@ -28,3 +28,5 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+# Rust (rewrite)
+/target

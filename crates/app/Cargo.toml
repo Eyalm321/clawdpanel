@@ -1,0 +1,11 @@
+[package]
+name = "clawdpanel-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "clawdpanel"
+path = "src/main.rs"
+
+[dependencies]
+clawdpanel-types.workspace = true
