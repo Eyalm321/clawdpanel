@@ -10,9 +10,15 @@
 //! The reveal machine talks to the OS only through the [`WindowOps`] seam, so it
 //! is fully testable headless with a fake cursor + fake clock.
 
+pub mod autostart;
 mod monitor;
 mod reveal;
 pub mod single_instance;
+
+// tray-icon's Linux backend (StatusNotifierItem/AppIndicator over GTK) is the
+// only one wired today; Windows/macOS trays land with S10/S11.
+#[cfg(target_os = "linux")]
+pub mod tray;
 
 #[cfg(target_os = "linux")]
 mod window;

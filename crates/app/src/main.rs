@@ -78,10 +78,11 @@ fn main() -> Result<(), slint::PlatformError> {
         x11_window_id(win)
     }).flatten();
 
-    // Dock + reveal (Linux/X11 only). Held in scope so the X connection, reveal
-    // controller and its poll loop live for the whole session.
+    // Dock + reveal + system tray (Linux/X11 only). Held in scope so the X
+    // connection, reveal controller + poll loop, the tray, and its GLib pump
+    // timer all live for the whole session.
     #[cfg(target_os = "linux")]
-    let _dock = xid.and_then(|id| dock_and_reveal(id, &reveal_slot));
+    let _linux = setup_linux(&w, xid, &reveal_slot);
     #[cfg(not(target_os = "linux"))]
     let _ = (&xid, &reveal_slot);
 
@@ -190,7 +191,7 @@ fn x11_window_id(win: &slint::winit_030::winit::window::Window) -> Option<u32> {
 fn dock_and_reveal(
     xid: u32,
     reveal_slot: &Arc<Mutex<Option<shell::Controller>>>,
-) -> Option<(shell::X11Window, shell::Controller, shell::RunHandle)> {
+) -> Option<(shell::X11Window, Vec<shell::MonitorInfo>, shell::Controller, shell::RunHandle)> {
     let xwin = match shell::X11Window::new(xid) {
         Ok(w) => w,
         Err(e) => {
@@ -211,7 +212,148 @@ fn dock_and_reveal(
     ctrl.init();
     let run = ctrl.spawn_run();
     *reveal_slot.lock().unwrap() = Some(ctrl.clone());
-    Some((xwin, ctrl, run))
+    Some((xwin, monitors, ctrl, run))
+}
+
+/// The brand PNG embedded for the tray icon (decoded to RGBA in `tray.rs` — NOT a
+/// template icon, so the colored square survives; same asset the Go build used).
+#[cfg(target_os = "linux")]
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../../../build/linux/icon.png");
+
+/// Live Linux shell handles kept alive for the session: the dock/reveal tuple,
+/// the tray, and its GLib pump timer.
+#[cfg(target_os = "linux")]
+type LinuxShell = (
+    Option<(shell::X11Window, Vec<shell::MonitorInfo>, shell::Controller, shell::RunHandle)>,
+    Option<std::rc::Rc<shell::tray::Tray>>,
+    Option<slint::Timer>,
+);
+
+/// Docks the bar, starts the reveal machine, then builds + wires the system tray.
+/// Returns everything that must outlive `main`'s setup so the connection, poll
+/// loop, tray and pump timer aren't dropped before `run()`.
+#[cfg(target_os = "linux")]
+fn setup_linux(
+    w: &clawdpanel_ui::BarWindow,
+    xid: Option<u32>,
+    reveal_slot: &Arc<Mutex<Option<shell::Controller>>>,
+) -> LinuxShell {
+    let dock = xid.and_then(|id| dock_and_reveal(id, reveal_slot));
+
+    // Tray menu inputs: single account until S6 config plumbing; monitor count
+    // from the dock enumeration (≥1). Active indices default to 0.
+    let monitors_len = dock.as_ref().map(|d| d.1.len()).unwrap_or(0).max(1);
+    let accounts = vec!["main".to_string()];
+    let tray = shell::tray::Tray::new(
+        TRAY_ICON_PNG,
+        env!("CARGO_PKG_VERSION"),
+        &accounts,
+        monitors_len,
+        shell::autostart::is_start_on_login(),
+        0,
+        0,
+    )
+    .map(std::rc::Rc::new);
+
+    // Clones of the dock handles the monitor-radio action needs to re-dock; the
+    // originals stay in `dock` (X11Window/Controller share their state via Arc).
+    let dock_for_wire = dock
+        .as_ref()
+        .map(|(xwin, monitors, ctrl, _run)| (xwin.clone(), monitors.clone(), ctrl.clone()));
+
+    let timer = tray.clone().map(|t| wire_tray(w, t, dock_for_wire));
+    (dock, tray, timer)
+}
+
+/// Wires the `Backend` tray callbacks (Quit / Settings… / ToggleStartup / account
+/// + monitor radio — the `tray.Controller` port) and starts the GLib pump timer
+/// that dispatches native menu clicks back through those same callbacks. Returns
+/// the timer so the caller keeps it alive.
+#[cfg(target_os = "linux")]
+fn wire_tray(
+    w: &clawdpanel_ui::BarWindow,
+    tray: std::rc::Rc<shell::tray::Tray>,
+    dock: Option<(shell::X11Window, Vec<shell::MonitorInfo>, shell::Controller)>,
+) -> slint::Timer {
+    let backend = w.global::<Backend>();
+
+    // Quit: end the Slint event loop (Go `controller.Quit()` → app teardown).
+    backend.on_quit(|| {
+        let _ = slint::quit_event_loop();
+    });
+
+    // Settings: the window is S6 — log the intent for now (stub, never panics).
+    backend.on_open_settings(|| eprintln!("[tray] open settings (window lands in S6)"));
+
+    // Start-on-login: flip the autostart desktop entry, then reflect the
+    // resulting on-disk state onto the checkbox (Go `App.ToggleStartup`).
+    {
+        let tray = tray.clone();
+        backend.on_toggle_startup(move || {
+            let enabled = !shell::autostart::is_start_on_login();
+            let exe = std::env::current_exe().unwrap_or_default();
+            if let Err(e) = shell::autostart::set_start_on_login(enabled, &exe) {
+                eprintln!("[tray] set start-on-login failed: {e}");
+            }
+            tray.set_startup_checked(shell::autostart::is_start_on_login());
+        });
+    }
+
+    // Account radio: single account until S6; just reflect the selection (Go
+    // `App.SetActiveAccount` → `SetAccountChecked`).
+    {
+        let tray = tray.clone();
+        backend.on_set_active_account(move |idx| {
+            tray.set_account_checked(idx.max(0) as usize);
+        });
+    }
+
+    // Monitor radio: re-dock to the chosen monitor + reconfigure the reveal
+    // machine, update the bar's monitor label, then reflect it on the radio (Go
+    // `App.SetMonitor`).
+    {
+        let tray = tray.clone();
+        let weak = w.as_weak();
+        backend.on_set_monitor(move |idx| {
+            let idx = idx.max(0) as usize;
+            if let Some((xwin, monitors, ctrl)) = dock.as_ref() {
+                if let Some(mon) = monitors.get(idx) {
+                    xwin.dock_to_monitor(mon, BAR_HEIGHT, true, monitors);
+                    ctrl.configure(mon.clone(), BAR_HEIGHT, true, false);
+                    if let Some(ui) = weak.upgrade() {
+                        ui.global::<ClaudeBar>()
+                            .set_monitor_label(format!("{}", idx + 1).into());
+                    }
+                }
+            }
+            tray.set_monitor_checked(idx);
+        });
+    }
+
+    // Pump GLib + dispatch tray clicks on the Slint loop. ~120ms is well under a
+    // human click cadence and cheap (events_pending short-circuits when idle).
+    let timer = slint::Timer::default();
+    let weak = w.as_weak();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(120),
+        move || {
+            tray.pump();
+            while let Some(action) = tray.poll_action() {
+                let Some(ui) = weak.upgrade() else { break };
+                let b = ui.global::<Backend>();
+                use shell::tray::TrayAction::*;
+                match action {
+                    SetAccount(i) => b.invoke_set_active_account(i as i32),
+                    SetMonitor(i) => b.invoke_set_monitor(i as i32),
+                    ToggleStartup => b.invoke_toggle_startup(),
+                    OpenSettings => b.invoke_open_settings(),
+                    Quit => b.invoke_quit(),
+                }
+            }
+        },
+    );
+    timer
 }
 
 /// Spawns the background poll loop: a tokio runtime on its own thread runs two

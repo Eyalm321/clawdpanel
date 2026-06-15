@@ -74,13 +74,23 @@ export global ClaudeBar {
     in property <[bool]> sep-visible;
 }
 
-// UI → backend intents (style.css / main.js click handlers).
+// UI → backend intents (style.css / main.js click handlers) + the system-tray
+// menu actions (S5). The tray (a native muda menu, not Slint) invokes these from
+// the Slint event-loop thread so the wiring lives in one place — Rust ports the
+// `tray.Controller` callbacks onto them.
 export global Backend {
     callback cycle-account(int);
     callback cycle-monitor(int);
     callback cycle-theme(int);
     callback toggle-pin();
     callback toggle-brand-menu();
+
+    // Tray menu actions.
+    callback set-active-account(int);
+    callback set-monitor(int);
+    callback toggle-startup();
+    callback open-settings();
+    callback quit();
 }
 
 // A weekly / 5H usage segment: LABEL: value [progress] (+ Matrix caret). The

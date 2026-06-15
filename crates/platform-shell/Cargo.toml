@@ -6,8 +6,22 @@ edition.workspace = true
 [dependencies]
 clawdpanel-types.workspace = true
 
+# System tray + menu (Tauri's cross-platform stack); muda items carry the
+# radio/check state. `image` decodes the embedded brand PNG to RGBA for the tray
+# icon (NOT a template icon — see tray.rs).
+# `libxdo` (the default feature on both) links system libxdo for menu-accelerator
+# key synthesis — we set no accelerators, so drop it and the libxdo system dep.
+tray-icon = { version = "0.21", default-features = false }
+# Pinned to the muda tray-icon 0.21 re-exports so the menu types are the same
+# crate instance (a newer muda would not satisfy `with_menu`).
+muda = { version = "0.17", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Linux (X11 / XWayland) dock + struts + cursor/fullscreen via direct X protocol,
 # replacing the wmctrl/xprop/xdotool subprocesses. Pinned to the same x11rb the
-# Slint winit backend already resolves (0.13).
+# Slint winit backend already resolves (0.13). `gtk` drives the tray's
+# StatusNotifierItem/AppIndicator host — init + pump it on the Slint thread
+# (matches the gtk libappindicator/tray-icon pull, so a single gtk crate).
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
+gtk = "0.18"
