@@ -55,11 +55,14 @@ export global ClaudeBar {
     in property <int> monitors-count: 1;
     in property <string> monitor-label: "1";
 
-    // Feature toggles (config plumbing is S6 — default everything on).
+    // Feature toggles (wired from config in S6 — default everything on).
     in property <bool> show-weekly: true;
     in property <bool> show-radio: true;
     in property <bool> show-monitor: true;
     in property <bool> show-theme: true;
+    // 5H usage is both feature-gated AND data-gated; the segment shows only when
+    // the feature is on and live data carries an hourly percent.
+    in property <bool> feature-hourly: true;
 
     // Pin state (visual; auto-hide wiring is the platform slice).
     in-out property <bool> pinned: true;
@@ -278,7 +281,7 @@ export component BarWindow inherits Window {
         if ClaudeBar.sep-visible[2] : Sep {}
 
         // ── 5-hour rolling usage ──
-        if ClaudeBar.data.show-hourly : UsageSeg {
+        if ClaudeBar.data.show-hourly && ClaudeBar.feature-hourly : UsageSeg {
             label: "5H";
             value: ClaudeBar.data.hourly-value;
             fill: ClaudeBar.data.hourly-fill;
@@ -291,7 +294,7 @@ export component BarWindow inherits Window {
         if ClaudeBar.sep-visible[3] : Sep {}
 
         // ── 5-hour reset countdown ──
-        if ClaudeBar.data.show-hourly : LabelVal {
+        if ClaudeBar.data.show-hourly && ClaudeBar.feature-hourly : LabelVal {
             label: "RESET";
             value: ClaudeBar.data.hourly-reset-in == "" ? "---" : ClaudeBar.data.hourly-reset-in;
         }

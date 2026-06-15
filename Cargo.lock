@@ -706,6 +706,7 @@ name = "clawdpanel-app"
 version = "0.0.0"
 dependencies = [
  "clawdpanel-claude-core",
+ "clawdpanel-media",
  "clawdpanel-platform-shell",
  "clawdpanel-types",
  "clawdpanel-ui",
@@ -718,6 +719,7 @@ name = "clawdpanel-claude-core"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "clawdpanel-types",
  "dirs",
  "nix 0.29.0",
  "once_cell",
@@ -734,6 +736,8 @@ name = "clawdpanel-media"
 version = "0.0.0"
 dependencies = [
  "clawdpanel-types",
+ "once_cell",
+ "regex",
 ]
 
 [[package]]

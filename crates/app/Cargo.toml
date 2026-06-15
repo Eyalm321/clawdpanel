@@ -11,6 +11,8 @@ path = "src/main.rs"
 clawdpanel-types.workspace = true
 clawdpanel-ui = { path = "../ui" }
 clawdpanel-claude-core = { path = "../claude-core" }
+# Station-URL parsing for the settings editor (the ParseStationItem port, S6).
+clawdpanel-media = { path = "../media" }
 # Linux X11 dock + struts + the cursor-driven reveal machine + single-instance.
 clawdpanel-platform-shell = { path = "../platform-shell" }
 # Needed for the event loop, the smoke-run Timer and the winit-030 accessor used

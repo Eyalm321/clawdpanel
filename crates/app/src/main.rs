@@ -12,15 +12,19 @@
 //! single-instance lock makes a second launch ping the running bar to re-reveal
 //! and exit.
 
+mod settings;
+
 use clawdpanel_ui::{Backend, ClaudeBar, ClaudeBarData, Theme};
 use slint::ComponentHandle;
 // `unstable-winit-030` re-exports winit + the accessor used to drop the server
 // titlebar and pin the bar above everything.
 use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::WinitWindowAccessor;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use clawdpanel_platform_shell as shell;
+use settings::UiState;
 
 /// Default data-refresh cadence (Go config `RefreshSeconds`, default 15). Full
 /// config plumbing is S6; until then the bar polls the default account.
@@ -78,6 +82,11 @@ fn main() -> Result<(), slint::PlatformError> {
         x11_window_id(win)
     }).flatten();
 
+    // Load the persisted config (S6). The shared app state owns it; the poll
+    // loop reads the active account + feature flags from its `Shared` half.
+    let cfg = clawdpanel_claude_core::config::load();
+    let ui = UiState::new(cfg, w.as_weak(), 0);
+
     // Dock + reveal + system tray (Linux/X11 only). Held in scope so the X
     // connection, reveal controller + poll loop, the tray, and its GLib pump
     // timer all live for the whole session.
@@ -86,9 +95,9 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(not(target_os = "linux"))]
     let _ = (&xid, &reveal_slot);
 
-    wire_interactions(&w);
+    wire_interactions(&w, &ui);
 
-    spawn_bar_engine(w.as_weak());
+    spawn_bar_engine(w.as_weak(), ui.shared.clone());
 
     // Smoke mode: flash the bar then quit so CI / `CLAWDPANEL_SMOKE=1` runs exit
     // 0 without a human closing the window. Held in scope so the timer isn't
@@ -100,6 +109,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let _smoke_timer = std::env::var("CLAWDPANEL_SMOKE").is_ok().then(|| {
         let t = slint::Timer::default();
         let weak = w.as_weak();
+        let state = ui.clone();
         let n = std::rc::Rc::new(std::cell::Cell::new(0_i32));
         t.start(
             slint::TimerMode::Repeated,
@@ -107,10 +117,17 @@ fn main() -> Result<(), slint::PlatformError> {
             move || {
                 let i = n.get();
                 n.set(i + 1);
-                if let Some(ui) = weak.upgrade() {
-                    ui.global::<Theme>().set_index(i % 5);
+                if let Some(bar) = weak.upgrade() {
+                    bar.global::<Theme>().set_index(i % 5);
                 }
-                if i >= 6 {
+                // Exercise the S6 settings window open/close path without a human.
+                if i == 3 {
+                    settings::open_settings(&state);
+                }
+                if i == 5 {
+                    settings::close_settings(&state);
+                }
+                if i >= 7 {
                     let _ = slint::quit_event_loop();
                 }
             },
@@ -128,29 +145,51 @@ fn main() -> Result<(), slint::PlatformError> {
 /// cycling are no-ops until config plumbing (S6) gives more than one of each; the
 /// pin's visual toggle is handled in Slint, this just receives the intent (the
 /// auto-hide wiring lives in the platform slice).
-fn wire_interactions(w: &clawdpanel_ui::BarWindow) {
+fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>) {
     let backend = w.global::<Backend>();
 
-    let theme_idx = std::rc::Rc::new(std::cell::Cell::new(0_i32));
-    let weak = w.as_weak();
-    backend.on_cycle_theme(move |dir| {
-        let next = (theme_idx.get() + dir).rem_euclid(5);
-        theme_idx.set(next);
-        if let Some(ui) = weak.upgrade() {
-            ui.global::<Theme>().set_index(next);
-        }
-    });
+    // Theme cycling: Rust owns the index (mirrors the old shared-localStorage) and
+    // pushes it into the bar AND any open settings window for an instant repaint.
+    {
+        let weak = w.as_weak();
+        let ui = ui.clone();
+        backend.on_cycle_theme(move |dir| {
+            let next = (ui.theme_idx.get() + dir).rem_euclid(5);
+            ui.theme_idx.set(next);
+            if let Some(bar) = weak.upgrade() {
+                bar.global::<Theme>().set_index(next);
+            }
+            settings::sync_theme(&ui, next);
+        });
+    }
 
-    backend.on_cycle_account(|_dir| { /* single account until S6 config plumbing */ });
-    backend.on_cycle_monitor(|_dir| { /* monitor switch lands with S6 config */ });
+    // Account cycling now steps through the configured accounts and switches the
+    // active one live (S6) — the bar repaints and the poll loop redirects.
+    {
+        let ui = ui.clone();
+        backend.on_cycle_account(move |dir| {
+            let active = ui.cfg.borrow().active_account;
+            settings::set_active_account(&ui, active + dir);
+        });
+    }
+
+    backend.on_cycle_monitor(|_dir| { /* monitor switch is the tray radio (S5) */ });
     backend.on_toggle_pin(|| { /* visual handled in Slint; auto-hide is platform slice */ });
     backend.on_toggle_brand_menu(|| { /* brand-menu window is a later slice */ });
 
-    // Show the monitor cycler arrows only when more than one screen exists,
-    // mirroring the JS `<2 → hide` gate. Single account for now.
-    let monitor_count = monitor_count();
+    // Tray / brand "Settings…" → open the S6 window (cross-platform; the tray
+    // pump invokes this same callback on Linux).
+    {
+        let ui = ui.clone();
+        backend.on_open_settings(move || settings::open_settings(&ui));
+    }
+
+    // Startup-fixed counts + initial feature visibility from the loaded config.
     let g = w.global::<ClaudeBar>();
-    g.set_monitors_count(monitor_count);
+    g.set_monitors_count(monitor_count());
+    let cfg = ui.cfg.borrow();
+    g.set_accounts_count((cfg.accounts.len() as i32).max(1));
+    settings::apply_features_to_bar(w, &cfg.features, false);
 }
 
 /// Number of detected monitors (gates the monitor cycler arrows). X11-only;
@@ -282,8 +321,8 @@ fn wire_tray(
         let _ = slint::quit_event_loop();
     });
 
-    // Settings: the window is S6 — log the intent for now (stub, never panics).
-    backend.on_open_settings(|| eprintln!("[tray] open settings (window lands in S6)"));
+    // Settings: the `Backend.open-settings` callback is wired cross-platform in
+    // `wire_interactions` (opens the S6 window); the tray pump just invokes it.
 
     // Start-on-login: flip the autostart desktop entry, then reflect the
     // resulting on-disk state onto the checkbox (Go `App.ToggleStartup`).
@@ -359,11 +398,11 @@ fn wire_tray(
 /// Spawns the background poll loop: a tokio runtime on its own thread runs two
 /// tickers and posts updates back onto the Slint event loop. Returning from
 /// `main` ends the process, tearing this thread down with it.
-fn spawn_bar_engine(weak: slint::Weak<clawdpanel_ui::BarWindow>) {
-    let account_path = clawdpanel_claude_core::default_account_path()
-        .unwrap_or_else(|| std::path::PathBuf::from(".claude"));
-    // Account name/path come from config in S6; until then use the Go default.
-    let account_name = "main".to_string();
+fn spawn_bar_engine(
+    weak: slint::Weak<clawdpanel_ui::BarWindow>,
+    shared: Arc<settings::Shared>,
+) {
+    use std::sync::atomic::Ordering;
 
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -376,16 +415,24 @@ fn spawn_bar_engine(weak: slint::Weak<clawdpanel_ui::BarWindow>) {
 
         rt.block_on(async move {
             // Data path: full bar payload on the ~15s cadence (first tick fires
-            // immediately). The live fetch + TTL cache live inside load_bar_data.
+            // immediately). The active account + feature flags are read from the
+            // shared state each tick, so a settings/bar account switch or feature
+            // toggle is picked up without restarting the loop.
             let data_weak = weak.clone();
-            let data_path = account_path.clone();
+            let shared_data = shared.clone();
             let data = tokio::spawn(async move {
                 let mut tick =
                     tokio::time::interval(std::time::Duration::from_secs(REFRESH_SECONDS));
                 loop {
                     tick.tick().await;
-                    let bar =
-                        clawdpanel_claude_core::load_bar_data(&data_path, &account_name).await;
+                    let (path, name) = {
+                        let a = shared_data.active.lock().unwrap();
+                        (a.path.clone(), a.name.clone())
+                    };
+                    let bar = clawdpanel_claude_core::load_bar_data(&path, &name).await;
+                    let features = shared_data.features.lock().unwrap().clone();
+                    let hourly_gate = bar.hourly_percent >= 0.0;
+                    shared_data.hourly_gate.store(hourly_gate, Ordering::Relaxed);
                     let w = data_weak.clone();
                     // Move the plain (Send) BarData onto the UI thread and build
                     // the Slint struct there, so no Slint types cross threads.
@@ -393,17 +440,10 @@ fn spawn_bar_engine(weak: slint::Weak<clawdpanel_ui::BarWindow>) {
                         if let Some(ui) = w.upgrade() {
                             let g = ui.global::<ClaudeBar>();
                             g.set_status(bar.status.clone().into());
-                            // Recompute separator visibility so the data-gated 5H
-                            // pair never leaves a doubled/dangling "·". Features
-                            // default on (config plumbing is S6).
-                            let seps = clawdpanel_ui::bar::bar_separators(
-                                true,
-                                bar.hourly_percent >= 0.0,
-                                true,
-                                true,
-                                true,
-                            );
-                            g.set_sep_visible(slint::ModelRc::new(slint::VecModel::from(seps)));
+                            // Recompute segment visibility + separators from the
+                            // live feature flags (so a hidden segment never leaves
+                            // a doubled/dangling "·").
+                            settings::apply_features_to_bar(&ui, &features, hourly_gate);
                             g.set_data(to_claude_bar_data(&bar));
                         }
                     });
@@ -413,13 +453,14 @@ fn spawn_bar_engine(weak: slint::Weak<clawdpanel_ui::BarWindow>) {
             // Status path: cheap 500ms session-freshness check; push only on
             // change (mirrors Go's watchClaudeStatus change-gate).
             let status_weak = weak.clone();
-            let status_path = account_path;
+            let shared_status = shared;
             let status = tokio::spawn(async move {
                 let mut last = String::new();
                 let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
                 loop {
                     tick.tick().await;
-                    let status = clawdpanel_claude_core::get_status(&status_path);
+                    let path = { shared_status.active.lock().unwrap().path.clone() };
+                    let status = clawdpanel_claude_core::get_status(&path);
                     if status != last {
                         last = status.clone();
                         let w = status_weak.clone();

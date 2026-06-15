@@ -161,6 +161,130 @@ export component Scanlines inherits Rectangle {
     }
 }
 
+// ── Settings-window controls (style.css `.editor-*` / `.panel-check`, bumped to
+//    26px for the roomier popup). All themed off the Theme global. ──
+
+// `.editor-input`: bordered single-line field, clay border on focus, with a
+// muted placeholder shown while empty. `text` is two-way so callers can bind it
+// to a Settings global property; `edited`/`accepted` mirror TextInput.
+export component EditorInput inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text <=> ti.text;
+    callback edited(string);
+    callback accepted(string);
+    height: 26px;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: ti.has-focus ? Theme.clay : Theme.muted;
+    forward-focus: ti;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        if root.text == "" : Text {
+            text: root.placeholder;
+            color: Theme.muted;
+            font-family: "Cascadia Mono";
+            font-size: 12px;
+            font-weight: 400;
+            vertical-alignment: center;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        ti := TextInput {
+            color: Theme.text;
+            font-family: "Cascadia Mono";
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+            single-line: true;
+            edited => { root.edited(self.text); }
+            accepted => { root.accepted(self.text); }
+        }
+    }
+}
+
+// `.editor-btn` (+ `--accent`): ghost button that fills on hover; the accent
+// variant carries the clay outline and inverts to clay-on-bg on hover.
+export component EditorButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> accent: false;
+    callback clicked;
+    height: 26px;
+    min-width: lbl.preferred-width + 24px;
+    border-width: 1px;
+    border-color: root.accent
+        ? Theme.clay
+        : (ta.has-hover ? Theme.text : Theme.muted);
+    background: ta.has-hover
+        ? (root.accent ? Theme.clay : rgba(255, 255, 255, 0.05))
+        : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    lbl := Glyph {
+        x: (parent.width - self.width) / 2;
+        text: root.label;
+        font-size: 11px;
+        color: root.accent
+            ? (ta.has-hover ? Theme.bg : Theme.clay)
+            : (ta.has-hover ? Theme.text : Theme.muted);
+    }
+}
+
+// `.panel-check`: clay-filled box with a ✓ when checked (accent-color clay).
+export component Check inherits Rectangle {
+    in property <bool> checked;
+    callback toggled(bool);
+    width: 16px;
+    height: 16px;
+    border-width: 1px;
+    border-radius: 2px;
+    border-color: root.checked ? Theme.clay : Theme.muted;
+    background: root.checked ? Theme.clay : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+    if root.checked : Text {
+        text: "✓";
+        color: Theme.bg;
+        font-family: "Cascadia Mono";
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+// `.editor-btn` sized as the small ✕ URL-row remove key.
+export component SmallButton inherits Rectangle {
+    in property <string> label: "✕";
+    callback clicked;
+    width: 26px;
+    height: 26px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.clay : Theme.muted;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: ta.has-hover ? Theme.clay : Theme.muted;
+        font-family: "Cascadia Mono";
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
 // Fallout's solid outlined Pip-Boy bar (style.css:204-229). 90×8 box with only
 // the right + bottom edges drawn (2px), and a fill that stands 1px proud of the
 // top. Slint borders are uniform, so the two visible edges are child rects.

@@ -1,0 +1,419 @@
+// ClawdPanel Settings window — S6 (#53). The Slint port of the Wails
+// `settings.html` modal (frontend/src/settings/*.js + the `.modal` rules in
+// style.css): a frameless, themed popup with a titlebar, a left nav sidebar
+// (ACCOUNTS / STATIONS / OPTIONS) and a body panel.
+//
+// Data arrives on the `Settings` global (filled from config by crates/app); the
+// panels emit granular CRUD callbacks the app handles (mutate config → save →
+// apply live → push the refreshed arrays back here). Station URLs are validated
+// through `parse-station-item` (the old server-side `ParseStationItem`). The
+// palette comes from the shared `Theme` global so the popup tracks the bar.
+
+import { Theme } from "theme.slint";
+import { Glyph, Invader, EditorInput, EditorButton, Check, SmallButton } from "atoms.slint";
+
+export enum SettingsPanel { accounts, stations, options }
+
+export struct SettingsAccount { name: string, path: string }
+export struct SettingsStationItem { raw: string, id: string, kind: string }
+export struct SettingsStation { name: string, items: [SettingsStationItem], shuffle: bool }
+export struct SettingsFeatures {
+    radio: bool,
+    monitor: bool,
+    theme: bool,
+    weekly-usage: bool,
+    hourly-usage: bool,
+}
+// Result of server-side URL validation (the ParseStationItem port).
+export struct SettingsParseResult { ok: bool, id: string, kind: string, error: string }
+
+export global Settings {
+    // ── which panel is mounted ──
+    in-out property <SettingsPanel> active-panel: SettingsPanel.accounts;
+
+    // ── data in (app → UI) ──
+    in property <[SettingsAccount]> accounts;
+    in-out property <int> active-account;
+    in property <[SettingsStation]> stations;
+    in property <SettingsFeatures> features;
+
+    // ── Accounts panel: cycler selection + edit/add form state ──
+    in-out property <int> acc-sel;
+    in-out property <bool> acc-form-open;
+    in-out property <int> acc-edit-index;       // -1 = add
+    in-out property <string> acc-form-name;
+    in-out property <string> acc-form-path;
+    in-out property <string> acc-error;
+
+    // ── Stations panel: cycler selection + form (name + dynamic URL rows) ──
+    in-out property <int> st-sel;
+    in-out property <bool> st-form-open;
+    in-out property <int> st-edit-index;        // -1 = add
+    in-out property <string> st-form-name;
+    in property <[string]> st-form-urls;        // app-managed model
+    in-out property <string> st-error;
+
+    // ── callbacks (UI → app) ──
+    callback show-panel(SettingsPanel);
+    callback close();
+
+    callback account-select(int);               // set active account (+ sel)
+    callback account-add();
+    callback account-edit();
+    callback account-delete();
+    callback account-save();
+    callback account-cancel();
+
+    callback station-select(int);
+    callback station-add();
+    callback station-edit();
+    callback station-delete();
+    callback station-save();
+    callback station-cancel();
+    callback st-url-add();
+    callback st-url-remove(int);
+    callback st-url-edited(int, string);
+
+    callback parse-station-item(string) -> SettingsParseResult;
+    callback feature-toggle(string, bool);
+}
+
+// Sidebar nav entry: clay left-border + clay text when active (`.modal-nav-item`).
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 32px;
+    background: (active || ta.has-hover) ? rgba(255, 255, 255, 0.04) : transparent;
+    // 2px clay left border when active.
+    Rectangle {
+        x: 0;
+        width: 2px;
+        height: 100%;
+        background: root.active ? Theme.clay : transparent;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        alignment: start;
+        Glyph {
+            text: root.label;
+            font-size: 11px;
+            color: root.active ? Theme.clay : (ta.has-hover ? Theme.text : Theme.muted);
+        }
+    }
+}
+
+// A label + control row (`.panel-row`): 64px label column + a growing control.
+component Row inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 10px;
+    Glyph {
+        text: root.label;
+        width: 72px;
+        font-size: 10px;
+        color: Theme.muted;
+    }
+    @children
+}
+
+export component SettingsWindow inherits Window {
+    title: "ClawdPanel — Settings";
+    no-frame: true;
+    background: Theme.bg;
+    preferred-width: 660px;
+    preferred-height: 420px;
+    min-width: 520px;
+    min-height: 260px;
+
+    // `.modal` outer border.
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.muted;
+    }
+
+    VerticalLayout {
+        // ── Titlebar: invader + SETTINGS + ✕ ──
+        Rectangle {
+            height: 28px;
+            background: rgba(255, 255, 255, 0.02);
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.muted;
+            }
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 6px;
+                spacing: 8px;
+                alignment: stretch;
+                VerticalLayout {
+                    alignment: center;
+                    Invader { width: 14px; height: 10px; }
+                }
+                Glyph {
+                    text: "SETTINGS";
+                    color: Theme.text;
+                    letter-spacing: 1px;
+                    horizontal-stretch: 1;
+                }
+                close-btn := Rectangle {
+                    width: 22px;
+                    border-width: 1px;
+                    border-color: close-ta.has-hover ? Theme.clay : transparent;
+                    close-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Settings.close(); }
+                    }
+                    Text {
+                        text: "✕";
+                        color: close-ta.has-hover ? Theme.clay : Theme.muted;
+                        font-family: "Cascadia Mono";
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
+        }
+
+        // ── Main: nav sidebar + body ──
+        HorizontalLayout {
+            // Nav sidebar (132px, clay-bordered active item).
+            Rectangle {
+                width: 132px;
+                background: Theme.bg;
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.muted;
+                }
+                VerticalLayout {
+                    padding: 10px;
+                    padding-top: 10px;
+                    spacing: 2px;
+                    alignment: start;
+                    NavItem {
+                        label: "ACCOUNTS";
+                        active: Settings.active-panel == SettingsPanel.accounts;
+                        clicked => { Settings.show-panel(SettingsPanel.accounts); }
+                    }
+                    NavItem {
+                        label: "STATIONS";
+                        active: Settings.active-panel == SettingsPanel.stations;
+                        clicked => { Settings.show-panel(SettingsPanel.stations); }
+                    }
+                    NavItem {
+                        label: "OPTIONS";
+                        active: Settings.active-panel == SettingsPanel.options;
+                        clicked => { Settings.show-panel(SettingsPanel.options); }
+                    }
+                }
+            }
+
+            // Body.
+            Rectangle {
+                background: Theme.bg;
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 14px;
+                    alignment: start;
+
+                    // ─────────── ACCOUNTS ───────────
+                    if Settings.active-panel == SettingsPanel.accounts : VerticalLayout {
+                        spacing: 12px;
+                        // list view
+                        if !Settings.acc-form-open : VerticalLayout {
+                            spacing: 12px;
+                            Row {
+                                label: "ACCOUNT";
+                                EditorButton {
+                                    label: "◀";
+                                    clicked => { Settings.account-select(Settings.acc-sel - 1); }
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    Glyph {
+                                        text: Settings.accounts[Settings.acc-sel].name
+                                            + " (" + Settings.accounts[Settings.acc-sel].path + ")";
+                                        color: Theme.clay;
+                                        overflow: elide;
+                                    }
+                                }
+                                EditorButton {
+                                    label: "▶";
+                                    clicked => { Settings.account-select(Settings.acc-sel + 1); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                EditorButton { label: "EDIT"; clicked => { Settings.account-edit(); } }
+                                EditorButton { label: "ADD"; clicked => { Settings.account-add(); } }
+                                EditorButton { label: "DELETE"; clicked => { Settings.account-delete(); } }
+                            }
+                        }
+                        // edit/add form
+                        if Settings.acc-form-open : VerticalLayout {
+                            spacing: 10px;
+                            Row {
+                                label: "NAME";
+                                EditorInput {
+                                    horizontal-stretch: 1;
+                                    placeholder: "main";
+                                    text <=> Settings.acc-form-name;
+                                }
+                            }
+                            Row {
+                                label: "PATH";
+                                EditorInput {
+                                    horizontal-stretch: 1;
+                                    placeholder: "~/.claude";
+                                    text <=> Settings.acc-form-path;
+                                }
+                            }
+                            if Settings.acc-error != "" : Glyph {
+                                text: Settings.acc-error;
+                                color: Theme.red;
+                                font-size: 10px;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                EditorButton { label: "SAVE"; accent: true; clicked => { Settings.account-save(); } }
+                                EditorButton { label: "CANCEL"; clicked => { Settings.account-cancel(); } }
+                            }
+                        }
+                    }
+
+                    // ─────────── STATIONS ───────────
+                    if Settings.active-panel == SettingsPanel.stations : VerticalLayout {
+                        spacing: 12px;
+                        if !Settings.st-form-open : VerticalLayout {
+                            spacing: 12px;
+                            Row {
+                                label: "STATION";
+                                EditorButton {
+                                    label: "◀";
+                                    clicked => { Settings.station-select(Settings.st-sel - 1); }
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    Glyph {
+                                        text: Settings.stations.length == 0
+                                            ? "(none — click ADD)"
+                                            : Settings.stations[Settings.st-sel].name
+                                                + " (" + Settings.stations[Settings.st-sel].items.length + " items)";
+                                        color: Theme.clay;
+                                        overflow: elide;
+                                    }
+                                }
+                                EditorButton {
+                                    label: "▶";
+                                    clicked => { Settings.station-select(Settings.st-sel + 1); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                EditorButton { label: "EDIT"; clicked => { Settings.station-edit(); } }
+                                EditorButton { label: "ADD"; clicked => { Settings.station-add(); } }
+                                EditorButton { label: "DELETE"; clicked => { Settings.station-delete(); } }
+                            }
+                        }
+                        if Settings.st-form-open : VerticalLayout {
+                            spacing: 10px;
+                            Row {
+                                label: "NAME";
+                                EditorInput {
+                                    horizontal-stretch: 1;
+                                    placeholder: "MY RADIO";
+                                    text <=> Settings.st-form-name;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Glyph { text: "URLS"; width: 72px; font-size: 10px; color: Theme.muted; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 6px;
+                                    for url[i] in Settings.st-form-urls : HorizontalLayout {
+                                        spacing: 6px;
+                                        EditorInput {
+                                            horizontal-stretch: 1;
+                                            placeholder: "youtube.com/watch?v=… or playlist?list=…";
+                                            text: url;
+                                            edited(t) => { Settings.st-url-edited(i, t); }
+                                        }
+                                        SmallButton { clicked => { Settings.st-url-remove(i); } }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        EditorButton { label: "+ URL"; clicked => { Settings.st-url-add(); } }
+                                    }
+                                }
+                            }
+                            if Settings.st-error != "" : Glyph {
+                                text: Settings.st-error;
+                                color: Theme.red;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                EditorButton { label: "SAVE"; accent: true; clicked => { Settings.station-save(); } }
+                                EditorButton { label: "CANCEL"; clicked => { Settings.station-cancel(); } }
+                            }
+                        }
+                    }
+
+                    // ─────────── OPTIONS ───────────
+                    if Settings.active-panel == SettingsPanel.options : VerticalLayout {
+                        spacing: 12px;
+                        Glyph {
+                            text: "Show or hide bar segments. Disabling RADIO stops the background audio engine, not just the player.";
+                            color: Theme.muted;
+                            font-size: 11px;
+                            font-weight: 400;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Glyph { text: "RADIO"; width: 120px; font-size: 11px; color: Theme.lbl; }
+                            Check { checked: Settings.features.radio; toggled(v) => { Settings.feature-toggle("radio", v); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Glyph { text: "MONITOR"; width: 120px; font-size: 11px; color: Theme.lbl; }
+                            Check { checked: Settings.features.monitor; toggled(v) => { Settings.feature-toggle("monitor", v); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Glyph { text: "THEME"; width: 120px; font-size: 11px; color: Theme.lbl; }
+                            Check { checked: Settings.features.theme; toggled(v) => { Settings.feature-toggle("theme", v); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Glyph { text: "WEEKLY USAGE"; width: 120px; font-size: 11px; color: Theme.lbl; }
+                            Check { checked: Settings.features.weekly-usage; toggled(v) => { Settings.feature-toggle("weeklyUsage", v); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Glyph { text: "5H USAGE"; width: 120px; font-size: 11px; color: Theme.lbl; }
+                            Check { checked: Settings.features.hourly-usage; toggled(v) => { Settings.feature-toggle("hourlyUsage", v); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

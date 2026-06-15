@@ -1,0 +1,32 @@
+// Compilation root for the whole UI. Slint's Rust generator emits one module
+// (`slint::include_modules!()`), so every window the app instantiates must be
+// reachable from a single compiled file. This re-exports the bar (S1–S5) and the
+// settings window (S6) plus the globals/structs the app binds to.
+
+import { BarWindow, ClaudeBar, ClaudeBarData, Backend, Theme } from "bar.slint";
+import {
+    SettingsWindow,
+    Settings,
+    SettingsPanel,
+    SettingsAccount,
+    SettingsStation,
+    SettingsStationItem,
+    SettingsFeatures,
+    SettingsParseResult,
+} from "settings.slint";
+
+export {
+    BarWindow,
+    ClaudeBar,
+    ClaudeBarData,
+    Backend,
+    Theme,
+    SettingsWindow,
+    Settings,
+    SettingsPanel,
+    SettingsAccount,
+    SettingsStation,
+    SettingsStationItem,
+    SettingsFeatures,
+    SettingsParseResult,
+}
