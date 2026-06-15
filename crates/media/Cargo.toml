@@ -31,3 +31,6 @@ gstreamer = "0.23"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "test-util"] }
+# Real XML parse for the staticizer acceptance gate (mirrors Go's encoding/xml
+# well-formedness check); already in the lockfile as a transitive dep.
+roxmltree = "0.21"

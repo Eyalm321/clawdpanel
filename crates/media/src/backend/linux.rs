@@ -2,8 +2,10 @@
 //! onto `gstreamer-rs`. Classic `playbin` (not playbin3 — we need `GstPlayFlags`)
 //! with audio-only flags, the PAUSED-preroll → `ASYNC_DONE` → buffer-fill →
 //! PLAYING promotion dance (the DASH "playing but silent" fix), a bus-polling
-//! thread, and a 100ms position poll. The live-DASH path is served as static
-//! DASH (S8 owns true live MPD); VOD is this slice.
+//! thread, and a 100ms position poll. Live radio rides this exact path: the
+//! resolver staticizes the dynamic live MPD (see [`crate::staticize`]) and serves
+//! it as static DASH reported NOT live, so the same managed preroll keeps it from
+//! scheduling audio hours ahead (silence). VOD uses it too.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

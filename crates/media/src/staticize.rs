@@ -38,17 +38,23 @@ static RE_INT: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\d+"#).unwrap());
 fn live_window_ms() -> i64 {
     use std::sync::Once;
     static LOG_ONCE: Once = Once::new();
-    if let Ok(v) = std::env::var("CLAWDPANEL_LIVE_WINDOW_MS") {
-        if let Ok(n) = v.parse::<i64>() {
-            if n > 0 {
-                LOG_ONCE.call_once(|| {
-                    log::info!("[radio] live manifest window overridden to {n}ms (CLAWDPANEL_LIVE_WINDOW_MS)");
-                });
-                return n;
-            }
+    match parse_window_override(std::env::var("CLAWDPANEL_LIVE_WINDOW_MS").ok().as_deref()) {
+        Some(n) => {
+            LOG_ONCE.call_once(|| {
+                log::info!("[radio] live manifest window overridden to {n}ms (CLAWDPANEL_LIVE_WINDOW_MS)");
+            });
+            n
         }
+        None => MAX_STATIC_WINDOW_MS,
     }
-    MAX_STATIC_WINDOW_MS
+}
+
+/// Parses the `CLAWDPANEL_LIVE_WINDOW_MS` value: a positive integer overrides the
+/// default; anything else (absent / unparseable / non-positive) yields `None` (use
+/// the default). Split out as a pure fn so the precedence is testable without
+/// mutating the process-global environment.
+fn parse_window_override(raw: Option<&str>) -> Option<i64> {
+    raw?.parse::<i64>().ok().filter(|&n| n > 0)
 }
 
 /// Rewrites YouTube's dynamic live MPD into a static one covering the freshest
@@ -198,12 +204,10 @@ mod tests {
     }
 
     fn well_formed(s: &str) -> bool {
-        // A crude well-formedness check: balanced angle brackets and no stray
-        // dynamic attrs. (The Go test uses encoding/xml; we keep it dependency
-        // -free but still catch a mangled trim.)
-        let opens = s.matches('<').count();
-        let closes = s.matches('>').count();
-        opens == closes && opens > 0
+        // Real XML parse — the regex surgery removes whole elements, so a mangled
+        // trim would leave an unbalanced tree a bracket-count would miss. Mirrors
+        // the Go test's `utf8XMLWellFormed` (encoding/xml) acceptance gate.
+        roxmltree::Document::parse(s).is_ok()
     }
 
     #[test]
@@ -244,5 +248,31 @@ mod tests {
     #[test]
     fn rejects_non_dynamic() {
         assert!(staticize_live_mpd(r#"<MPD type="static"></MPD>"#).is_err());
+    }
+
+    // The staticizer also fails loudly on the two shapes that would silently
+    // mis-shift the PTO and reproduce the silence bug (timescale ≠ 1000 / r=
+    // repeat-compacted timelines). Mutate the fixture to confirm both reject.
+    #[test]
+    fn rejects_unexpected_timeline_shape() {
+        // timescale ≠ 1000 → the ms PTO arithmetic no longer holds; reject.
+        let other_ts = fixture().replace(r#"timescale="1000""#, r#"timescale="90000""#);
+        assert!(staticize_live_mpd(&other_ts).is_err(), "non-1000 timescale must reject");
+
+        // r=-compacted timeline → one <S> no longer means one segment; reject.
+        let with_repeat = fixture().replacen(r#"<S d="5000"/>"#, r#"<S d="5000" r="5"/>"#, 1);
+        assert!(staticize_live_mpd(&with_repeat).is_err(), "r= repeat timeline must reject");
+    }
+
+    // Acceptance: CLAWDPANEL_LIVE_WINDOW_MS precedence — a positive value wins,
+    // everything else falls back to the 30min cap. Tests the pure parser so it
+    // never mutates the process-global env (which would race the trims above).
+    #[test]
+    fn live_window_env_override() {
+        assert_eq!(parse_window_override(Some("20000")), Some(20_000));
+        assert_eq!(parse_window_override(None), None); // unset → default
+        assert_eq!(parse_window_override(Some("0")), None); // non-positive → default
+        assert_eq!(parse_window_override(Some("-5")), None);
+        assert_eq!(parse_window_override(Some("nope")), None); // unparseable → default
     }
 }
