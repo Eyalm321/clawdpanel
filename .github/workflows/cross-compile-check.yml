@@ -1,0 +1,65 @@
+name: Cross-compile check
+
+# release.yml only builds Windows/macOS/Linux on a v* tag, so code that
+# references a Linux-only platform symbol from cross-platform files
+# (app.go, main.go, internal/reveal) compiles on the author's Linux box,
+# merges, and only fails at release time (this broke v2.2.4 — see #45).
+#
+# This fast job runs on every PR to master and cross-vets the non-Linux
+# targets so that class of break is caught before merge instead of at
+# release. It needs no cgo cross-toolchain — CGO_ENABLED=0 is enough to
+# type-check the Go symbol graph.
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+# A new push to the same PR cancels the in-flight check.
+concurrency:
+  group: cross-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-compile:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows has no cgo source files in this repo, so a CGO=0 vet of the
+          # WHOLE module is authoritative: it type-checks app.go / main.go /
+          # internal/reveal too, catching cross-package symbol leaks (like the
+          # #44 break where app.go referenced an undefined platform.*), not just
+          # breaks inside the platform package.
+          - goos: windows
+            scope: "./..."
+          # Darwin has cgo-only files that CGO=0 excludes, so a whole-module vet
+          # would report false "undefined" for them. Limit to the platform layer
+          # and the pure-Go internal packages; the darwin cgo paths are covered
+          # by the tag-triggered release build.
+          - goos: darwin
+            scope: "./internal/platform/... ./internal/audio/... ./internal/claude/... ./internal/config/... ./internal/radio/... ./internal/station/..."
+    env:
+      CGO_ENABLED: 0
+      GOOS: ${{ matrix.goos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          # Read the version straight from go.mod, same as release.yml, so the
+          # toolchain can't drift out of sync.
+          go-version-file: go.mod
+
+      - name: Placeholder embed dir
+        # main.go has //go:embed all:frontend/dist; without the directory the
+        # whole-module vet fails to resolve the pattern. We only type-check here,
+        # so an empty dir is enough — no frontend build needed (keeps it fast).
+        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
+
+      - name: Cross-vet for ${{ matrix.goos }}
+        run: go vet ${{ matrix.scope }}
