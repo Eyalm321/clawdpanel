@@ -10,6 +10,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gst::prelude::*;
@@ -36,6 +37,19 @@ impl Phase {
     }
 }
 
+/// How long a "playing" pipeline may run with zero advancing playback position
+/// (past the initial buffer fill) before we declare it wedged. The trigger case:
+/// a broken / empty live HLS playlist that `hlsdemux` retries every
+/// target-duration forever, spamming `assertion 'streams != NULL' failed` and
+/// never posting a bus error — so neither GStreamer nor the controller ever
+/// gives up. On timeout we tear the pipeline down (stopping the hot-loop) and
+/// post a terminal `StateError`, which drives the controller's retry-once and
+/// the station's fail-limit give-up. Generous so a slow-but-real start (network
+/// jitter, a heavy preroll) never trips it; only a stream that produces no audio
+/// at all does. Go never hit this (kkdai returns working manifests); the
+/// `rusty_ytdl` extraction gap makes it reachable, so the Rust player guards it.
+const STALL_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Per-track player state, reset by `play`. The initial-fill fields are
 /// deliberately orthogonal to `phase` — the buffering hold must survive phase
 /// changes. (Go `trackState`.)
@@ -50,6 +64,15 @@ struct Track {
     /// tick can't re-flip the UI to playing after the station has advanced).
     ended: bool,
     last_pos: i64, // ns; -1 = none yet
+    /// True once the playback position has actually advanced — distinguishes
+    /// "really producing audio" from a pipeline that merely reports PLAYING
+    /// (a wedged live demux does the latter). Gates the stall watchdog off once
+    /// any real progress is seen.
+    progressed: bool,
+    /// The stall watchdog fires at most once per track.
+    watchdog_fired: bool,
+    /// When this track's pipeline was (re)started, for the stall watchdog.
+    started_at: Option<Instant>,
 }
 
 impl Track {
@@ -63,6 +86,9 @@ impl Track {
             confirmed: false,
             ended: false,
             last_pos: -1,
+            progressed: false,
+            watchdog_fired: false,
+            started_at: Some(Instant::now()),
         }
     }
 }
@@ -288,6 +314,16 @@ fn poll_position(shared: &Arc<Shared>) {
     if !wants || ended {
         return;
     }
+
+    // Stall watchdog: past the initial buffer fill, a pipeline that has never
+    // produced an advancing position is wedged (a broken live HLS playlist gst
+    // retries forever with no bus error). Tear it down to READY — which stops
+    // the hlsdemux hot-loop — and post a terminal error so the controller's
+    // retry-once and the station's give-up settle it to a single error state.
+    if check_stall(shared) {
+        return;
+    }
+
     let Some(pos) = shared.playbin.query_position::<gst::ClockTime>() else {
         return;
     };
@@ -300,6 +336,9 @@ fn poll_position(shared: &Arc<Shared>) {
         let mut t = shared.track.lock();
         let advanced = t.last_pos >= 0 && pos_ns > t.last_pos;
         t.last_pos = pos_ns;
+        if advanced {
+            t.progressed = true;
+        }
         if !t.confirmed {
             // Confirm playback the moment the position advances (live pipelines
             // can stream audio while the async PLAYING transition never settles).
@@ -325,6 +364,41 @@ fn poll_position(shared: &Arc<Shared>) {
         ev.duration = dur;
         shared.send(ev);
     }
+}
+
+/// The stall watchdog (see [`STALL_TIMEOUT`]). Returns `true` once it has fired
+/// (so the caller skips the rest of the tick). Only arms past the initial buffer
+/// fill (`fill_done`) and only when no real progress has been seen, so the
+/// managed VOD/DASH preroll-then-fill hold can't trip it; a stream that has ever
+/// advanced its position never trips it either. Fires at most once per track.
+fn check_stall(shared: &Arc<Shared>) -> bool {
+    let fire = {
+        let t = shared.track.lock();
+        t.started_at.map_or(false, |t0| {
+            stall_should_fire(t.fill_done, t.progressed, t.watchdog_fired, t0.elapsed())
+        })
+    };
+    if !fire {
+        return false;
+    }
+    {
+        let mut t = shared.track.lock();
+        t.watchdog_fired = true;
+        t.phase = Phase::Idle; // stop position ticks until the next play
+    }
+    log::warn!("[audio] playback stalled (no progress in {STALL_TIMEOUT:?}); stopping pipeline");
+    let _ = shared.playbin.set_state(gst::State::Ready);
+    shared.send(Event::error("", "playback stalled: no audio"));
+    true
+}
+
+/// Pure stall-watchdog decision (testable without a live pipeline): fire only
+/// past the initial fill, with no real progress ever seen, at most once, after
+/// the timeout has elapsed. The `fill_done` gate is load-bearing — it keeps the
+/// managed VOD/DASH buffer-fill hold (where the position legitimately hasn't
+/// advanced yet) from tripping the watchdog.
+fn stall_should_fire(fill_done: bool, progressed: bool, fired: bool, elapsed: Duration) -> bool {
+    fill_done && !progressed && !fired && elapsed >= STALL_TIMEOUT
 }
 
 /// Dispatches one GStreamer bus message (Go `handleBusMessage`).
@@ -431,5 +505,29 @@ fn handle_state_changed(shared: &Arc<Shared>, new_state: gst::State, pending: gs
     };
     if let Some(ev) = ev {
         shared.send(ev);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The stall watchdog's gating (the part that turns a wedged broken-HLS
+    // pipeline into a terminal error so the controller/station give up instead
+    // of letting gst hot-loop the `streams != NULL` assertion forever).
+    #[test]
+    fn stall_watchdog_gating() {
+        let over = STALL_TIMEOUT + Duration::from_secs(1);
+        let under = Duration::from_secs(0);
+        // Wedged: filled, never progressed, not yet fired, past the timeout.
+        assert!(stall_should_fire(true, false, false, over));
+        // Still within the timeout → hold (give a slow-but-real start time).
+        assert!(!stall_should_fire(true, false, false, under));
+        // During the managed VOD/DASH buffer fill (fill not done) → never fire.
+        assert!(!stall_should_fire(false, false, false, over));
+        // Real playback progress was seen → never fire.
+        assert!(!stall_should_fire(true, true, false, over));
+        // Fires at most once per track.
+        assert!(!stall_should_fire(true, false, true, over));
     }
 }

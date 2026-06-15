@@ -125,36 +125,69 @@ export global RadioBridge {
     callback cycle-volume();
 }
 
-// Play triangle (off/load/err) or pause bars (on), tinted by status.
+// Radio status glyph: the play triangle (off/load/err) or pause bars (on),
+// 11×11 to match `.radio-ico`, drawn from the exact index.html SVG paths.
+//
+// Heartbeat (style.css `@keyframes radio-pulse` / `soundwave`): loading pulses
+// the clay play icon (radio-pulse 0.8s, opacity .35↔1); playing pulses the green
+// pause icon (soundwave 1.5s, opacity .7↔1); error is a static red glyph and off
+// is a static muted glyph (no pulse — it STOPS on error). Slint has no looping
+// CSS keyframes, so a half-period Timer flips `hi` and `animate opacity` eases
+// each half — a faithful triangle of the keyframe (ui-slint.md timer pattern).
 component RadioStatusIcon inherits Rectangle {
     in property <string> status;
     in property <color> tint;
-    width: 12px;
-    height: 12px;
+    width: 11px;
+    height: 11px;
+
+    // Pulse only while loading/playing; err/off hold a static glyph.
+    property <bool> pulsing: root.status == "load" || root.status == "on";
+    property <bool> hi: false;
+    // soundwave bottoms out at .7, radio-pulse at .35.
+    property <float> lo: root.status == "on" ? 0.7 : 0.35;
+    // Half the keyframe period (soundwave 1.5s / radio-pulse 0.8s).
+    property <duration> half: root.status == "on" ? 750ms : 400ms;
+
+    opacity: root.pulsing ? (root.hi ? 1.0 : root.lo) : 1.0;
+    animate opacity { duration: root.half; easing: ease-in-out; }
+
+    pulse-timer := Timer {
+        interval: root.half;
+        running: root.pulsing;
+        triggered => { root.hi = !root.hi; }
+    }
+
     if root.status != "on" : Path {
-        width: 11px;
-        height: 11px;
+        width: 100%;
+        height: 100%;
         viewbox-width: 24;
         viewbox-height: 24;
         commands: "M8 5v14l11-7z";
         fill: root.tint;
     }
-    if root.status == "on" : HorizontalLayout {
-        spacing: 2px;
-        alignment: center;
-        Rectangle { width: 3px; height: 11px; background: root.tint; }
-        Rectangle { width: 3px; height: 11px; background: root.tint; }
+    if root.status == "on" : Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M6 5h4v14H6z M14 5h4v14h-4z";
+        fill: root.tint;
     }
 }
 
 // The radio cluster: « ‹ TITLE/scrubber › » ▶/⏸ shuffle | VOL nn%. Behavior is
 // driven entirely by the RadioBridge global.
 component RadioCluster inherits SegBox {
-    property <color> tint:
+    // Status-glyph color (style.css): playing → green, loading → clay, error →
+    // red, off/idle → muted. (The old port mis-mapped on→clay, load→lbl.)
+    property <color> status-tint:
         RadioBridge.status == "err" ? Theme.red :
-        RadioBridge.status == "on" ? Theme.clay :
-        RadioBridge.status == "load" ? Theme.lbl :
+        RadioBridge.status == "on" ? Theme.green :
+        RadioBridge.status == "load" ? Theme.clay :
         Theme.muted;
+    // Scrubber fill: clay (`.radio-tl-fill`), green @ .5 alpha for a livestream
+    // (`.radio-timeline.live .radio-tl-fill`) — independent of the status color.
+    property <color> seek-tint: root.is-live ? Theme.green.with-alpha(0.5) : Theme.clay;
     property <bool> is-live: RadioBridge.dur <= 0;
     property <float> frac: RadioBridge.dur > 0
         ? clamp(RadioBridge.pos / RadioBridge.dur, 0.0, 1.0)
@@ -174,20 +207,28 @@ component RadioCluster inherits SegBox {
         }
     }
 
+    // Outer gap is the `.seg` 5px (between each transport cluster and the
+    // title); the keys WITHIN a cluster overlap (`#seg-radio .arrow + .arrow`
+    // etc. `margin-left: -3px` against the 5px gap → a 2px cluster pitch).
     HorizontalLayout {
-        spacing: 0;
+        spacing: 5px;
         alignment: start;
 
-        // « prev station
-        if RadioBridge.stations-count >= 2 : GhostChip {
-            clicked => { RadioBridge.next-station(-1); }
-            Glyph { text: "«"; font-size: 9px; color: Theme.muted; }
-        }
-        // ‹ prev track (grayed when the station can't step)
-        GhostChip {
-            disabled: !RadioBridge.track-nav-active;
-            clicked => { RadioBridge.track-prev(); }
-            Glyph { text: "‹"; font-size: 9px; color: Theme.muted; }
+        // Left transport cluster [« ‹] (2px internal pitch).
+        HorizontalLayout {
+            spacing: 2px;
+            alignment: start;
+            // « prev station
+            if RadioBridge.stations-count >= 2 : GhostChip {
+                clicked => { RadioBridge.next-station(-1); }
+                Glyph { text: "«"; font-size: 9px; color: Theme.muted; }
+            }
+            // ‹ prev track (grayed when the station can't step)
+            GhostChip {
+                disabled: !RadioBridge.track-nav-active;
+                clicked => { RadioBridge.track-prev(); }
+                Glyph { text: "‹"; font-size: 9px; color: Theme.muted; }
+            }
         }
 
         // Title / scrubber viewport (fixed 168px, sized to the scrubber).
@@ -226,14 +267,15 @@ component RadioCluster inherits SegBox {
                         height: 100%;
                         width: parent.width * root.frac;
                         border-radius: 2px;
-                        background: root.tint;
+                        background: root.seek-tint;
                     }
                 }
                 if root.is-live : Glyph {
                     x: 0;
                     text: "LIVE";
                     font-size: 9px;
-                    color: Theme.muted;
+                    // `.radio-timeline.live #radio-time-cur { color: var(--green) }`.
+                    color: Theme.green;
                 }
                 seek-ta := TouchArea {
                     mouse-cursor: root.is-live ? MouseCursor.default : MouseCursor.pointer;
@@ -252,38 +294,43 @@ component RadioCluster inherits SegBox {
             }
         }
 
-        // › next track
-        GhostChip {
-            disabled: !RadioBridge.track-nav-active;
-            clicked => { RadioBridge.track-next(); }
-            Glyph { text: "›"; font-size: 9px; color: Theme.muted; }
-        }
-        // » next station
-        if RadioBridge.stations-count >= 2 : GhostChip {
-            clicked => { RadioBridge.next-station(1); }
-            Glyph { text: "»"; font-size: 9px; color: Theme.muted; }
-        }
-
-        // play / pause
-        GhostChip {
-            clicked => { RadioBridge.play-pause(); }
-            RadioStatusIcon {
-                status: RadioBridge.status;
-                tint: root.tint;
+        // Right transport cluster [› » ▶ shuffle] (2px internal pitch).
+        HorizontalLayout {
+            spacing: 2px;
+            alignment: start;
+            // › next track
+            GhostChip {
+                disabled: !RadioBridge.track-nav-active;
+                clicked => { RadioBridge.track-next(); }
+                Glyph { text: "›"; font-size: 9px; color: Theme.muted; }
             }
-        }
-        // shuffle (clay when on, muted when off)
-        GhostChip {
-            clicked => { RadioBridge.toggle-shuffle(); }
-            Path {
-                width: 10px;
-                height: 10px;
-                viewbox-width: 24;
-                viewbox-height: 24;
-                commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
-                fill: transparent;
-                stroke: RadioBridge.shuffle-on ? Theme.clay : Theme.muted;
-                stroke-width: 2.2px;
+            // » next station
+            if RadioBridge.stations-count >= 2 : GhostChip {
+                clicked => { RadioBridge.next-station(1); }
+                Glyph { text: "»"; font-size: 9px; color: Theme.muted; }
+            }
+
+            // play / pause
+            GhostChip {
+                clicked => { RadioBridge.play-pause(); }
+                RadioStatusIcon {
+                    status: RadioBridge.status;
+                    tint: root.status-tint;
+                }
+            }
+            // shuffle (clay when on, muted when off)
+            GhostChip {
+                clicked => { RadioBridge.toggle-shuffle(); }
+                Path {
+                    width: 10px;
+                    height: 10px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
+                    fill: transparent;
+                    stroke: RadioBridge.shuffle-on ? Theme.clay : Theme.muted;
+                    stroke-width: 2.2px;
+                }
             }
         }
     }
