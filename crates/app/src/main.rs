@@ -15,6 +15,7 @@
 mod radio;
 mod settings;
 mod updater;
+mod menu;
 
 use clawdpanel_ui::{Backend, ClaudeBar, ClaudeBarData, Theme};
 use slint::ComponentHandle;
@@ -38,7 +39,15 @@ const BAR_HEIGHT: i32 = 28;
 /// Single-instance / reveal-ping id (matches the Go `SingleInstanceOptions`).
 const APP_ID: &str = "com.clawdpanel.app";
 
+#[cfg(target_os = "linux")]
+thread_local! {
+    static LINUX_SHELL: std::cell::RefCell<Option<LinuxShell>> = std::cell::RefCell::new(None);
+}
+
 fn main() -> Result<(), slint::PlatformError> {
+    // Force Slint to use the winit backend to ensure access to winit window functions.
+    std::env::set_var("SLINT_BACKEND", "winit");
+
     // Linux: run under XWayland even on Wayland sessions. Wayland gives apps no
     // way to self-position or stay always-on-top (GNOME/Mutter has no layer-shell
     // for third parties), so the whole docking path — geometry, _DOCK type,
@@ -74,37 +83,87 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     };
 
+    // Load the persisted config (S6). The shared app state owns it; the poll
+    // loop reads the active account + feature flags from its `Shared` half.
+    let cfg = clawdpanel_claude_core::config::load();
+
+    // Determine the monitor width on launch to set the correct size before showing the window
+    let mon_width = {
+        let monitors = shell::get_monitors();
+        let monitors_len = monitors.len();
+        let initial_monitor_idx = (cfg.monitor as usize).min(monitors_len.max(1) - 1);
+        monitors.get(initial_monitor_idx).map(|m| shell::width_px(m)).unwrap_or(1920)
+    };
+
     // Must run before any window is shown so `font-family: "Cascadia Mono"`
     // resolves against the embedded TTF.
     clawdpanel_ui::register_fonts();
 
     let w = clawdpanel_ui::BarWindow::new()?;
-    w.window().set_size(slint::PhysicalSize::new(1920, BAR_HEIGHT as u32));
-    w.show()?;
+    let scale_factor = w.window().scale_factor();
+    let width_logical = (mon_width as f32) / scale_factor;
+    w.set_window_width(width_logical);
+    w.window().set_size(slint::PhysicalSize::new(mon_width as u32, BAR_HEIGHT as u32));
 
-    // Frameless + always-on-top via the live winit window (Wayland/X11 have no
-    // way to express this from the .slint side). While we hold the winit window,
-    // resolve the bar's X11 window id from its raw handle for the dock path.
+    // Get XID and configure X11 dock styles and positioning before showing the window
     let xid = w.window().with_winit_window(|win| {
         win.set_decorations(false);
         win.set_window_level(WindowLevel::AlwaysOnTop);
         x11_window_id(win)
     }).flatten();
 
-    // Load the persisted config (S6). The shared app state owns it; the poll
-    // loop reads the active account + feature flags from its `Shared` half.
-    let cfg = clawdpanel_claude_core::config::load();
+    #[cfg(target_os = "linux")]
+    if let Some(id) = xid {
+        if let Ok(xwin) = shell::X11Window::new(id) {
+            xwin.apply_bar_styles();
+            let monitors = shell::get_monitors();
+            let monitors_len = monitors.len();
+            let initial_monitor_idx = (cfg.monitor as usize).min(monitors_len.max(1) - 1);
+            if let Some(mon) = monitors.get(initial_monitor_idx).or_else(|| monitors.first()) {
+                xwin.dock_to_monitor(mon, BAR_HEIGHT, cfg.pinned, &monitors);
+                let y = if mon.dock_edge == "bottom" {
+                    mon.top + mon.height - BAR_HEIGHT
+                } else {
+                    mon.top + mon.work_top_offset
+                };
+                w.window().with_winit_window(|win| {
+                    win.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(mon.left, y));
+                });
+            }
+        }
+    }
+
+    w.show()?;
+
     let ui = UiState::new(cfg, w.as_weak(), 0);
 
-    // Dock + reveal + system tray (Linux/X11 only). Held in scope so the X
-    // connection, reveal controller + poll loop, the tray, and its GLib pump
-    // timer all live for the whole session.
+    // Dock + reveal + system tray (Linux/X11 only) deferred until event loop starts.
     #[cfg(target_os = "linux")]
-    let _linux = setup_linux(&w, xid, &reveal_slot);
-    #[cfg(not(target_os = "linux"))]
-    let _ = (&xid, &reveal_slot);
+    {
+        let weak_w = w.as_weak();
+        let reveal_slot = reveal_slot.clone();
+        let initial_cfg = ui.cfg.borrow().clone();
+        slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak_w.upgrade() {
+                let xid = w.window().with_winit_window(|win| {
+                    win.set_decorations(false);
+                    win.set_window_level(WindowLevel::AlwaysOnTop);
+                    x11_window_id(win)
+                }).flatten();
+                let winit_accessible = w.window().with_winit_window(|_| ()).is_some();
+                eprintln!("[main] Deferred winit window accessible: {}, xid: {:?}", winit_accessible, xid);
 
-    wire_interactions(&w, &ui);
+                let linux_shell = setup_linux(&w, xid, &reveal_slot, &initial_cfg);
+                LINUX_SHELL.with(|cell| {
+                    *cell.borrow_mut() = Some(linux_shell);
+                });
+            }
+        }).unwrap();
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = &reveal_slot;
+
+    wire_interactions(&w, &ui, reveal_slot.clone());
 
     // Radio playback engine (S7): only stood up when the Radio feature is on,
     // mirroring Go's `initAudio`. Held for the session (drop tears down the
@@ -161,7 +220,7 @@ fn main() -> Result<(), slint::PlatformError> {
         t
     });
 
-    w.run()
+    slint::run_event_loop_until_quit()
 }
 
 /// Wires the bar's UI→backend intents (the `Backend` global callbacks) and the
@@ -171,7 +230,7 @@ fn main() -> Result<(), slint::PlatformError> {
 /// cycling are no-ops until config plumbing (S6) gives more than one of each; the
 /// pin's visual toggle is handled in Slint, this just receives the intent (the
 /// auto-hide wiring lives in the platform slice).
-fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>) {
+fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>, reveal_slot: Arc<Mutex<Option<shell::Controller>>>) {
     let backend = w.global::<Backend>();
 
     // Theme cycling: Rust owns the index (mirrors the old shared-localStorage) and
@@ -186,6 +245,7 @@ fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>) {
                 bar.global::<Theme>().set_index(next);
             }
             settings::sync_theme(&ui, next);
+            menu::sync_theme(next);
         });
     }
 
@@ -199,9 +259,121 @@ fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>) {
         });
     }
 
-    backend.on_cycle_monitor(|_dir| { /* monitor switch is the tray radio (S5) */ });
-    backend.on_toggle_pin(|| { /* visual handled in Slint; auto-hide is platform slice */ });
-    backend.on_toggle_brand_menu(|| { /* brand-menu window is a later slice */ });
+    // Account setting: switches the active account live (invoked via tray or other means).
+    {
+        let ui = ui.clone();
+        backend.on_set_active_account(move |idx| {
+            settings::set_active_account(&ui, idx);
+        });
+    }
+
+    // Monitor cycling: moves the bar across available monitors.
+    {
+        let ui = ui.clone();
+        let weak = w.as_weak();
+        backend.on_cycle_monitor(move |dir| {
+            let monitors_len = {
+                #[cfg(target_os = "linux")]
+                {
+                    shell::get_monitors().len()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    1
+                }
+            };
+            if monitors_len <= 1 {
+                return;
+            }
+            let current = ui.cfg.borrow().monitor;
+            let next = (current + dir).rem_euclid(monitors_len as i32);
+            if let Some(bar) = weak.upgrade() {
+                bar.global::<Backend>().invoke_set_monitor(next);
+            }
+        });
+    }
+
+    // Monitor setting: re-dock to the chosen monitor + reconfigure the reveal
+    // machine, update the bar's monitor label, then reflect it on the radio.
+    {
+        let ui = ui.clone();
+        let weak = w.as_weak();
+        backend.on_set_monitor(move |idx| {
+            let idx = idx.max(0) as usize;
+            // Update in-memory config and save to disk
+            {
+                let mut cfg = ui.cfg.borrow_mut();
+                cfg.monitor = idx as i32;
+                let _ = clawdpanel_claude_core::config::save(&cfg);
+            }
+            
+            // Access LINUX_SHELL to dock and update tray checked state
+            #[cfg(target_os = "linux")]
+            LINUX_SHELL.with(|cell| {
+                if let Some((Some((xwin, monitors, ctrl, _)), Some(tray), _)) = cell.borrow().as_ref() {
+                    if let Some(mon) = monitors.get(idx) {
+                        let pinned = ui.cfg.borrow().pinned;
+                        let click_through = ui.cfg.borrow().click_through;
+                        xwin.remove_app_bar();
+                        xwin.dock_to_monitor(mon, BAR_HEIGHT, pinned, monitors);
+                        ctrl.configure(mon.clone(), BAR_HEIGHT, pinned, click_through);
+                        if let Some(ui_window) = weak.upgrade() {
+                            ui_window.global::<ClaudeBar>()
+                                .set_monitor_label(format!("{}", idx + 1).into());
+                            let width = shell::width_px(mon);
+                            let scale_factor = ui_window.window().scale_factor();
+                            let width_logical = (width as f32) / scale_factor;
+                            ui_window.set_window_width(width_logical);
+                            ui_window.window().set_size(slint::PhysicalSize::new(width as u32, BAR_HEIGHT as u32));
+                            ui_window.window().with_winit_window(|win| {
+                                let _ = win.request_inner_size(slint::winit_030::winit::dpi::PhysicalSize::new(width as u32, BAR_HEIGHT as u32));
+                                let y = if mon.dock_edge == "bottom" {
+                                    mon.top + mon.height - BAR_HEIGHT
+                                } else {
+                                    mon.top + mon.work_top_offset
+                                };
+                                win.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(mon.left, y));
+                            });
+                        }
+                    }
+                    tray.set_monitor_checked(idx);
+                }
+            });
+        });
+    }
+    // Pin toggle: toggle the in-memory config, save it to disk, and update the reveal controller.
+    {
+        let ui = ui.clone();
+        let _reveal_slot = reveal_slot.clone();
+        backend.on_toggle_pin(move || {
+            let pinned = {
+                let mut cfg = ui.cfg.borrow_mut();
+                cfg.pinned = !cfg.pinned;
+                let _ = clawdpanel_claude_core::config::save(&cfg);
+                cfg.pinned
+            };
+            #[cfg(target_os = "linux")]
+            LINUX_SHELL.with(|cell| {
+                if let Some((Some((xwin, monitors, ctrl, _)), _, _)) = cell.borrow().as_ref() {
+                    let monitor_idx = ui.cfg.borrow().monitor as usize;
+                    if let Some(mon) = monitors.get(monitor_idx) {
+                        xwin.dock_to_monitor(mon, BAR_HEIGHT, pinned, monitors);
+                    }
+                    ctrl.set_pinned(pinned);
+                }
+            });
+            #[cfg(not(target_os = "linux"))]
+            if let Some(ctrl) = _reveal_slot.lock().unwrap().as_ref() {
+                ctrl.set_pinned(pinned);
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        backend.on_toggle_brand_menu(move || {
+            menu::toggle_brand_menu(&ui);
+        });
+    }
 
     // Tray / brand "Settings…" → open the S6 window (cross-platform; the tray
     // pump invokes this same callback on Linux).
@@ -219,6 +391,8 @@ fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>) {
     let g = w.global::<ClaudeBar>();
     g.set_monitors_count(monitor_count());
     let cfg = ui.cfg.borrow();
+    g.set_monitor_label(format!("{}", cfg.monitor + 1).into());
+    g.set_pinned(cfg.pinned);
     g.set_accounts_count((cfg.accounts.len() as i32).max(1));
     settings::apply_features_to_bar(w, &cfg.features, false);
 }
@@ -244,9 +418,11 @@ fn monitor_count() -> i32 {
 /// Pulls the X11 window id out of a winit window's raw handle (Xlib or Xcb).
 /// Returns `None` on non-X11 backends (Wayland/Win/mac) so the caller skips the
 /// X-only dock path.
-fn x11_window_id(win: &slint::winit_030::winit::window::Window) -> Option<u32> {
+pub(crate) fn x11_window_id(win: &slint::winit_030::winit::window::Window) -> Option<u32> {
     use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    match win.window_handle().ok()?.as_raw() {
+    let handle = win.window_handle().ok()?;
+    eprintln!("[main] Raw window handle: {:?}", handle.as_raw());
+    match handle.as_raw() {
         RawWindowHandle::Xlib(h) => Some(h.window as u32),
         RawWindowHandle::Xcb(h) => Some(h.window.get()),
         _ => None,
@@ -257,10 +433,71 @@ fn x11_window_id(win: &slint::winit_030::winit::window::Window) -> Option<u32> {
 /// reveal machine. Launch defaults mirror Go's `NewApp` force-overrides (docked,
 /// pinned, opaque). Returns the live handles (X connection, reveal controller,
 /// poll loop) to keep them alive for the session, or `None` if X init fails.
+struct SlintX11Window {
+    x11: shell::X11Window,
+    weak_w: slint::Weak<clawdpanel_ui::BarWindow>,
+    hovered: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for SlintX11Window {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for SlintX11Window {}
+
+#[cfg(target_os = "linux")]
+impl shell::WindowOps for SlintX11Window {
+    fn window_rect(&self) -> (i32, i32, i32, i32) {
+        self.x11.window_rect()
+    }
+    fn move_to(&self, x: i32, y: i32) {
+        self.x11.move_to(x, y);
+    }
+    fn clip_top(&self, width: i32, height: i32, top_clip: i32) {
+        self.x11.clip_top(width, height, top_clip);
+    }
+    fn show(&self) {
+        let weak = self.weak_w.clone();
+        slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.show();
+            }
+        }).unwrap();
+        self.x11.show();
+    }
+    fn hide(&self) {
+        let weak = self.weak_w.clone();
+        slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
+        }).unwrap();
+        self.x11.hide();
+    }
+    fn full_screen_active(&self, mon: &shell::MonitorInfo) -> bool {
+        self.x11.full_screen_active(mon)
+    }
+    fn set_click_through(&self, enabled: bool) {
+        self.x11.set_click_through(enabled);
+    }
+    fn cursor_pos(&self) -> (i32, i32) {
+        self.x11.cursor_pos()
+    }
+    fn is_hovered(&self) -> bool {
+        self.hovered.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn auto_hide_supported(&self) -> bool {
+        self.x11.auto_hide_supported()
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn dock_and_reveal(
+    w: &clawdpanel_ui::BarWindow,
     xid: u32,
     reveal_slot: &Arc<Mutex<Option<shell::Controller>>>,
+    initial_monitor_idx: usize,
+    cfg: &clawdpanel_types::Config,
+    hovered: Arc<std::sync::atomic::AtomicBool>,
 ) -> Option<(shell::X11Window, Vec<shell::MonitorInfo>, shell::Controller, shell::RunHandle)> {
     let xwin = match shell::X11Window::new(xid) {
         Ok(w) => w,
@@ -272,13 +509,19 @@ fn dock_and_reveal(
     xwin.apply_bar_styles();
 
     let monitors = shell::get_monitors();
-    let mon = monitors.first()?.clone();
+    let mon = monitors.get(initial_monitor_idx).or_else(|| monitors.first())?.clone();
     // app_bar_mode=true → reserve the strut; pinned=true → bar stays expanded.
-    xwin.dock_to_monitor(&mon, BAR_HEIGHT, true, &monitors);
+    xwin.dock_to_monitor(&mon, BAR_HEIGHT, cfg.pinned, &monitors);
     xwin.set_opacity(1.0);
 
-    let ctrl = shell::Controller::new(xwin.ops());
-    ctrl.configure(mon, BAR_HEIGHT, true, false);
+    let slint_xwin = SlintX11Window {
+        x11: xwin.clone(),
+        weak_w: w.as_weak(),
+        hovered,
+    };
+
+    let ctrl = shell::Controller::new(Box::new(slint_xwin));
+    ctrl.configure(mon, BAR_HEIGHT, cfg.pinned, cfg.click_through);
     ctrl.init();
     let run = ctrl.spawn_run();
     *reveal_slot.lock().unwrap() = Some(ctrl.clone());
@@ -296,7 +539,7 @@ const TRAY_ICON_PNG: &[u8] = include_bytes!("../../../build/linux/icon.png");
 type LinuxShell = (
     Option<(shell::X11Window, Vec<shell::MonitorInfo>, shell::Controller, shell::RunHandle)>,
     Option<std::rc::Rc<shell::tray::Tray>>,
-    Option<slint::Timer>,
+    Vec<slint::Timer>,
 );
 
 /// Docks the bar, starts the reveal machine, then builds + wires the system tray.
@@ -307,32 +550,77 @@ fn setup_linux(
     w: &clawdpanel_ui::BarWindow,
     xid: Option<u32>,
     reveal_slot: &Arc<Mutex<Option<shell::Controller>>>,
+    cfg: &clawdpanel_types::Config,
 ) -> LinuxShell {
-    let dock = xid.and_then(|id| dock_and_reveal(id, reveal_slot));
+    let monitors = shell::get_monitors();
+    let monitors_len = monitors.len().max(1);
+    let initial_monitor_idx = (cfg.monitor as usize).min(monitors_len - 1);
 
-    // Tray menu inputs: single account until S6 config plumbing; monitor count
-    // from the dock enumeration (≥1). Active indices default to 0.
-    let monitors_len = dock.as_ref().map(|d| d.1.len()).unwrap_or(0).max(1);
-    let accounts = vec!["main".to_string()];
+    let hovered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hovered_for_timer = hovered.clone();
+    let weak_w = w.as_weak();
+    let hover_timer = slint::Timer::default();
+    hover_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(80),
+        move || {
+            if let Some(ui) = weak_w.upgrade() {
+                let has_hover = ui.get_has_hover();
+                hovered_for_timer.store(has_hover, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    );
+
+    let dock = xid.and_then(|id| dock_and_reveal(w, id, reveal_slot, initial_monitor_idx, cfg, hovered));
+    if let Some((_, monitors, _, _)) = &dock {
+        if let Some(mon) = monitors.get(initial_monitor_idx) {
+            let width = shell::width_px(mon);
+            let scale_factor = w.window().scale_factor();
+            let width_logical = (width as f32) / scale_factor;
+            w.set_window_width(width_logical);
+            w.window().set_size(slint::PhysicalSize::new(width as u32, BAR_HEIGHT as u32));
+            w.window().with_winit_window(|win| {
+                let _ = win.request_inner_size(slint::winit_030::winit::dpi::PhysicalSize::new(width as u32, BAR_HEIGHT as u32));
+            });
+            let y = if mon.dock_edge == "bottom" {
+                mon.top + mon.height - BAR_HEIGHT
+            } else {
+                mon.top + mon.work_top_offset
+            };
+            w.window().with_winit_window(|win| {
+                win.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(mon.left, y));
+            });
+            eprintln!("[setup_linux] after set_size & set_position, Slint window size: {:?}, pos: {:?}", w.window().size(), w.window().position());
+        }
+    }
+
+    // Tray menu inputs: multiple accounts from config (S6); monitor count
+    // from the dock enumeration (≥1).
+    let accounts: Vec<String> = if cfg.accounts.is_empty() {
+        vec!["main".to_string()]
+    } else {
+        cfg.accounts.iter().map(|a| a.name.clone()).collect()
+    };
+    
+    let active_account_idx = (cfg.active_account as usize).min(accounts.len() - 1);
     let tray = shell::tray::Tray::new(
         TRAY_ICON_PNG,
         env!("CARGO_PKG_VERSION"),
         &accounts,
         monitors_len,
         shell::autostart::is_start_on_login(),
-        0,
-        0,
+        active_account_idx,
+        initial_monitor_idx,
     )
     .map(std::rc::Rc::new);
 
-    // Clones of the dock handles the monitor-radio action needs to re-dock; the
-    // originals stay in `dock` (X11Window/Controller share their state via Arc).
-    let dock_for_wire = dock
-        .as_ref()
-        .map(|(xwin, monitors, ctrl, _run)| (xwin.clone(), monitors.clone(), ctrl.clone()));
-
-    let timer = tray.clone().map(|t| wire_tray(w, t, dock_for_wire));
-    (dock, tray, timer)
+    let timer = tray.clone().map(|t| wire_tray(w, t));
+    let mut timers = Vec::new();
+    if let Some(t) = timer {
+        timers.push(t);
+    }
+    timers.push(hover_timer);
+    (dock, tray, timers)
 }
 
 /// Wires the `Backend` tray callbacks (Quit / Settings… / ToggleStartup / account
@@ -343,7 +631,6 @@ fn setup_linux(
 fn wire_tray(
     w: &clawdpanel_ui::BarWindow,
     tray: std::rc::Rc<shell::tray::Tray>,
-    dock: Option<(shell::X11Window, Vec<shell::MonitorInfo>, shell::Controller)>,
 ) -> slint::Timer {
     let backend = w.global::<Backend>();
 
@@ -369,36 +656,7 @@ fn wire_tray(
         });
     }
 
-    // Account radio: single account until S6; just reflect the selection (Go
-    // `App.SetActiveAccount` → `SetAccountChecked`).
-    {
-        let tray = tray.clone();
-        backend.on_set_active_account(move |idx| {
-            tray.set_account_checked(idx.max(0) as usize);
-        });
-    }
-
-    // Monitor radio: re-dock to the chosen monitor + reconfigure the reveal
-    // machine, update the bar's monitor label, then reflect it on the radio (Go
-    // `App.SetMonitor`).
-    {
-        let tray = tray.clone();
-        let weak = w.as_weak();
-        backend.on_set_monitor(move |idx| {
-            let idx = idx.max(0) as usize;
-            if let Some((xwin, monitors, ctrl)) = dock.as_ref() {
-                if let Some(mon) = monitors.get(idx) {
-                    xwin.dock_to_monitor(mon, BAR_HEIGHT, true, monitors);
-                    ctrl.configure(mon.clone(), BAR_HEIGHT, true, false);
-                    if let Some(ui) = weak.upgrade() {
-                        ui.global::<ClaudeBar>()
-                            .set_monitor_label(format!("{}", idx + 1).into());
-                    }
-                }
-            }
-            tray.set_monitor_checked(idx);
-        });
-    }
+    // Account and monitor radio callbacks are now registered in wire_interactions.
 
     // Pump GLib + dispatch tray clicks on the Slint loop. ~120ms is well under a
     // human click cadence and cheap (events_pending short-circuits when idle).
@@ -567,3 +825,27 @@ fn to_claude_bar_data(b: &clawdpanel_claude_core::BarData) -> ClaudeBarData {
         primary_model: b.primary_model.clone().into(),
     }
 }
+
+#[cfg(target_os = "linux")]
+pub fn sync_tray_account(idx: usize) {
+    LINUX_SHELL.with(|cell| {
+        if let Some((_, Some(tray), _)) = cell.borrow().as_ref() {
+            tray.set_account_checked(idx);
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+pub fn sync_tray_monitor(idx: usize) {
+    LINUX_SHELL.with(|cell| {
+        if let Some((_, Some(tray), _)) = cell.borrow().as_ref() {
+            tray.set_monitor_checked(idx);
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn sync_tray_account(_idx: usize) {}
+
+#[cfg(not(target_os = "linux"))]
+pub fn sync_tray_monitor(_idx: usize) {}

@@ -87,5 +87,6 @@ pub trait WindowOps: Send + Sync {
     fn set_click_through(&self, enabled: bool);
     fn cursor_pos(&self) -> (i32, i32);
     fn full_screen_active(&self, mon: &MonitorInfo) -> bool;
+    fn is_hovered(&self) -> bool;
     fn auto_hide_supported(&self) -> bool;
 }

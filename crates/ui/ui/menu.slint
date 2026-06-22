@@ -1,0 +1,145 @@
+// ClawdPanel Brand Menu popup — S12. The Slint port of the Wails
+// `menu.html` + `frontend/src/menu.js`: a frameless, themed popup anchored under
+// the brand invader icon. It offers CHECK FOR UPDATES and EXIT.
+// The palette comes from the shared `Theme` global so the popup tracks the bar.
+
+import { Theme } from "theme.slint";
+
+export global Menu {
+    in property <string> check-state: "idle"; // "idle" | "busy" | "done"
+    in property <string> hint: "";
+    in property <string> hint-kind: "none";  // "none" | "busy" | "ok" | "update" | "error"
+
+    callback check-updates();
+    callback quit();
+    callback close();
+}
+
+component MenuButton inherits Rectangle {
+    in property <string> label;
+    in property <string> icon-char: "◻";
+    in property <color> icon-color: Theme.muted;
+    in property <string> hint-text: "";
+    in property <color> hint-color: Theme.muted;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: 27px;
+    border-radius: 0px;
+    border-width: 1px;
+    border-color: transparent;
+    background: transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover : {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: root.danger ? Theme.red : Theme.clay;
+        }
+    ]
+
+    animate background { duration: 100ms; }
+    animate border-color { duration: 100ms; }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        alignment: stretch;
+
+        // Icon
+        Text {
+            text: root.icon-char;
+            font-family: "Cascadia Mono";
+            font-size: 11px;
+            font-weight: 700;
+            color: ta.has-hover ? (root.danger ? Theme.red : Theme.clay) : root.icon-color;
+            vertical-alignment: center;
+            width: 12px;
+        }
+
+        // Label
+        Text {
+            text: root.label;
+            font-family: "Cascadia Mono";
+            font-size: 11px;
+            font-weight: 700;
+            color: ta.has-hover ? (root.danger ? Theme.red : Theme.clay) : Theme.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+
+        // Hint
+        if root.hint-text != "" : Text {
+            text: root.hint-text;
+            font-family: "Cascadia Mono";
+            font-size: 9px;
+            font-weight: 700;
+            color: root.hint-color;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component BrandMenuWindow inherits Window {
+    title: "Claude Panel — Menu";
+    no-frame: true;
+    background: Theme.bg;
+    preferred-width: 188px;
+    preferred-height: 64px;
+    width: 188px;
+    height: 64px;
+
+    // Outer border
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.muted;
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") { // Escape key
+                Menu.close();
+                accept;
+            } else {
+                reject;
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding: 3px;
+        spacing: 2px;
+        alignment: stretch;
+
+        MenuButton {
+            label: "CHECK FOR UPDATES";
+            icon-char:
+                Menu.check-state == "busy" ? "◼" :
+                Menu.check-state == "done" ? "✔" : "◻";
+            icon-color:
+                Menu.check-state == "busy" ? Theme.clay :
+                Menu.check-state == "done" ? Theme.green : Theme.muted;
+            hint-text: Menu.hint;
+            hint-color:
+                Menu.hint-kind == "busy" ? Theme.muted :
+                Menu.hint-kind == "ok" ? Theme.green :
+                Menu.hint-kind == "update" ? Theme.clay :
+                Menu.hint-kind == "error" ? Theme.red : Theme.muted;
+            clicked => { Menu.check-updates(); }
+        }
+
+        MenuButton {
+            label: "EXIT";
+            icon-char: "◻";
+            icon-color: Theme.muted;
+            danger: true;
+            clicked => { Menu.quit(); }
+        }
+    }
+}

@@ -17,19 +17,21 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::{Query, State, Path as AxumPath};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use bytes::Bytes;
+use once_cell::sync::Lazy;
+use regex::{Captures, Regex};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 use rusty_ytdl::search::{Playlist, PlaylistSearchOptions};
-use rusty_ytdl::{Video, VideoFormat};
+use rusty_ytdl::{Video, VideoFormat, VideoOptions, RequestOptions};
 
 use crate::error::{Error, Result};
 use crate::event::ResolvedTrack;
@@ -44,6 +46,8 @@ const CACHE_TTL: Duration = Duration::from_secs(3600);
 const PLAYLIST_CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
 /// dashdemux refetches dynamic manifests every ~2s (~1MB each); cache briefly.
 const DASH_BODY_TTL: Duration = Duration::from_millis(1500);
+
+static RE_BASE_URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)<BaseURL\b([^>]*)>(.*?)</BaseURL>"#).unwrap());
 
 struct TrackEntry {
     track: ResolvedTrack,
@@ -64,6 +68,8 @@ struct ManifestBody {
 pub struct YtdlResolver {
     rt: Handle,
     http: reqwest::Client,
+    http_v4: reqwest::Client,
+    http_v6: reqwest::Client,
     port: u16,
     cache: Mutex<HashMap<String, TrackEntry>>,
     playlist_cache: Mutex<HashMap<String, PlaylistEntry>>,
@@ -93,9 +99,21 @@ impl YtdlResolver {
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_default();
+        let http_v4 = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .build()
+            .unwrap_or_default();
+        let http_v6 = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .local_address(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
+            .build()
+            .unwrap_or_default();
         let resolver = Arc::new(YtdlResolver {
             rt: rt.clone(),
             http,
+            http_v4,
+            http_v6,
             port,
             cache: Mutex::new(HashMap::new()),
             playlist_cache: Mutex::new(HashMap::new()),
@@ -107,6 +125,9 @@ impl YtdlResolver {
         let app = Router::new()
             .route("/stream", get(stream_handler))
             .route("/dash", get(dash_handler))
+            .route("/hls/master", get(hls_master_handler))
+            .route("/hls/sub", get(hls_sub_handler))
+            .route("/proxy_segment/*path", get(proxy_segment_handler))
             .with_state(resolver.clone());
         rt.spawn(async move {
             match tokio::net::TcpListener::from_std(listener) {
@@ -146,7 +167,14 @@ impl YtdlResolver {
             }
         }
 
-        let video = Video::new(video_id)
+        let options = VideoOptions {
+            request_options: RequestOptions {
+                client: Some(self.http.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let video = Video::new_with_options(video_id, options)
             .map_err(|e| Error::new(format!("youtube: new video {video_id}: {e}")))?;
         let info = video
             .get_info()
@@ -228,7 +256,10 @@ impl YtdlResolver {
         let vc2 = vc.clone();
         self.rt.spawn(async move {
             match me.resolve_direct(&id, false).await {
-                Ok(t) => download_into(me.http.clone(), t.url, vc2, token).await,
+                Ok(t) => {
+                    let client = me.client_for_url(&t.url).clone();
+                    download_into(client, t.url, vc2, token).await
+                }
                 Err(e) => {
                     log::warn!("[radio] cache resolve {id} failed: {e}");
                     // download_into not started; mark failed via a no-op cache (the
@@ -255,7 +286,7 @@ impl YtdlResolver {
             return error_response(StatusCode::NOT_FOUND, "unknown live stream");
         };
 
-        let mut body = match self.fetch_manifest(&upstream).await {
+        let body = match self.fetch_manifest(&upstream).await {
             Some(b) => b,
             None => {
                 // Upstream manifest URLs expire (~6h) — re-resolve once and retry.
@@ -270,14 +301,20 @@ impl YtdlResolver {
         };
 
         let text = String::from_utf8_lossy(&body).into_owned();
-        let fixed = match staticize_live_mpd(&text) {
-            Ok(f) => f.into_bytes(),
+        let mut fixed = match staticize_live_mpd(&text) {
+            Ok(f) => f,
             Err(e) => {
                 log::warn!("[radio] live MPD rewrite failed ({e}); serving original");
-                std::mem::take(&mut body)
+                text
             }
         };
-        let fixed = Bytes::from(fixed);
+        fixed = RE_BASE_URL.replace_all(&fixed, |caps: &Captures| {
+            let attrs = &caps[1];
+            let url = caps[2].trim();
+            let hex_url = to_hex(url.as_bytes());
+            format!("<BaseURL{}>http://127.0.0.1:{}/proxy_segment/{}/</BaseURL>", attrs, self.port, hex_url)
+        }).into_owned();
+        let fixed = Bytes::from(fixed.into_bytes());
         self.live_dash_body.lock().insert(
             video_id.to_string(),
             ManifestBody { body: fixed.clone(), at: Instant::now() },
@@ -296,7 +333,14 @@ impl YtdlResolver {
 
     /// Re-resolves a live stream's upstream DASH URL (expiry recovery).
     async fn reresolve_dash(&self, video_id: &str) -> Option<String> {
-        let video = Video::new(video_id).ok()?;
+        let options = VideoOptions {
+            request_options: RequestOptions {
+                client: Some(self.http.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let video = Video::new_with_options(video_id, options).ok()?;
         let info = video.get_info().await.ok()?;
         let dash = info.dash_manifest_url?;
         if dash.is_empty() {
@@ -313,9 +357,14 @@ impl StreamResolver for YtdlResolver {
     /// the local `/stream` proxy. (Go `Resolve`.)
     async fn resolve(&self, video_id: &str, force_refresh: bool) -> Result<ResolvedTrack> {
         let track = self.resolve_direct(video_id, force_refresh).await?;
-        // Live, proxy down, or already a proxy URL (live /dash) → play directly.
-        if track.is_live || self.port == 0 || track.url.starts_with(&self.proxy_prefix()) {
+        if self.port == 0 || track.url.starts_with(&self.proxy_prefix()) {
             return Ok(track);
+        }
+        if track.is_live {
+            return Ok(ResolvedTrack {
+                url: format!("http://127.0.0.1:{}/hls/master?id={}", self.port, video_id.trim()),
+                is_live: true,
+            });
         }
         Ok(ResolvedTrack {
             url: format!("http://127.0.0.1:{}/stream?id={}", self.port, video_id.trim()),
@@ -441,15 +490,31 @@ impl YtdlResolver {
             Ok(t) => t,
             Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         };
-        let mut req = self.http.get(&track.url);
+        let client = self.client_for_url(&track.url);
+        let is_v6 = url_prefers_ipv6(&track.url);
+        println!("[Passthrough] Fetching VOD (is_v6={}): {}", is_v6, track.url);
+
+        let mut req = client.get(&track.url)
+            .header(header::REFERER, "https://www.youtube.com/")
+            .header(header::ORIGIN, "https://www.youtube.com");
         if let Some(rng) = headers.get(header::RANGE) {
             req = req.header(header::RANGE, rng);
         }
         let upstream = match req.send().await {
             Ok(u) => u,
-            Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => {
+                println!("[Passthrough] request error: {}", e);
+                return error_response(StatusCode::BAD_GATEWAY, &e.to_string());
+            }
         };
         let status = upstream.status();
+        println!("[Passthrough] status response: {}", status);
+        if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+            let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
+            println!("[Passthrough] error body: {}", body_text);
+            return error_response(status, &body_text);
+        }
+
         let mut builder = Response::builder().status(status);
         for h in [header::CONTENT_TYPE, header::CONTENT_LENGTH, header::CONTENT_RANGE] {
             if let Some(v) = upstream.headers().get(&h) {
@@ -516,9 +581,362 @@ fn error_response(status: StatusCode, msg: &str) -> Response {
         .unwrap()
 }
 
+#[derive(Deserialize)]
+struct HlsSubParam {
+    id: Option<String>,
+    url: Option<String>,
+}
+
+async fn hls_master_handler(
+    State(r): State<Arc<YtdlResolver>>,
+    Query(q): Query<IdParam>,
+) -> Response {
+    let Some(id) = q.id.filter(|s| !s.is_empty()) else {
+        return error_response(StatusCode::BAD_REQUEST, "missing video id");
+    };
+    let track = match r.resolve_direct(&id, false).await {
+        Ok(t) => t,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let resp = match r.http.get(&track.url)
+        .header(header::REFERER, "https://www.youtube.com/")
+        .header(header::ORIGIN, "https://www.youtube.com")
+        .send().await {
+        Ok(res) => res,
+        Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
+    };
+    if resp.status() != StatusCode::OK {
+        return error_response(resp.status(), "failed to fetch HLS master manifest");
+    }
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+
+    let mut new_lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            let hex_url = to_hex(trimmed.as_bytes());
+            new_lines.push(format!("http://127.0.0.1:{}/hls/sub?id={}&url={}", r.port, id, hex_url));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+    let rewritten = new_lines.join("\n");
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-mpegURL")
+        .body(Body::from(rewritten))
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
+}
+
+async fn hls_sub_handler(
+    State(r): State<Arc<YtdlResolver>>,
+    Query(q): Query<HlsSubParam>,
+) -> Response {
+    let Some(_id) = q.id.filter(|s| !s.is_empty()) else {
+        return error_response(StatusCode::BAD_REQUEST, "missing video id");
+    };
+    let Some(url_hex) = q.url.filter(|s| !s.is_empty()) else {
+        return error_response(StatusCode::BAD_REQUEST, "missing sub-playlist url");
+    };
+    let url_bytes = match from_hex(&url_hex) {
+        Some(b) => b,
+        None => return error_response(StatusCode::BAD_REQUEST, "invalid hex url"),
+    };
+    let real_url = match String::from_utf8(url_bytes) {
+        Ok(u) => u,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid UTF-8 in url"),
+    };
+
+    let resp = match r.http.get(&real_url)
+        .header(header::REFERER, "https://www.youtube.com/")
+        .header(header::ORIGIN, "https://www.youtube.com")
+        .send().await {
+        Ok(res) => res,
+        Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
+    };
+    if resp.status() != StatusCode::OK {
+        return error_response(resp.status(), "failed to fetch HLS sub-playlist");
+    }
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+
+    let mut new_lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            let hex_url = to_hex(trimmed.as_bytes());
+            new_lines.push(format!("http://127.0.0.1:{}/proxy_segment/{}", r.port, hex_url));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+    let rewritten = new_lines.join("\n");
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-mpegURL")
+        .body(Body::from(rewritten))
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
+}
+
+async fn proxy_segment_handler(
+    State(r): State<Arc<YtdlResolver>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    AxumPath(path): AxumPath<String>,
+) -> Response {
+    let (hex_base, relative_suffix) = if let Some(slash_idx) = path.find('/') {
+        (&path[..slash_idx], Some(&path[slash_idx..]))
+    } else {
+        (path.as_str(), None)
+    };
+
+    let original_base_bytes = match from_hex(hex_base) {
+        Some(b) => b,
+        None => return error_response(StatusCode::BAD_REQUEST, "invalid hex URL"),
+    };
+    let original_base_url = match String::from_utf8(original_base_bytes) {
+        Ok(s) => s,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid UTF-8 in URL"),
+    };
+
+    let mut final_url = original_base_url;
+    if let Some(suffix) = relative_suffix {
+        if final_url.ends_with('/') && suffix.starts_with('/') {
+            final_url.push_str(&suffix[1..]);
+        } else {
+            final_url.push_str(suffix);
+        }
+    }
+
+    if let Some(query) = uri.query() {
+        if final_url.contains('?') {
+            final_url.push('&');
+        } else {
+            final_url.push('?');
+        }
+        final_url.push_str(query);
+    }
+
+    r.proxy_segment(&headers, &final_url).await
+}
+
+impl YtdlResolver {
+    fn client_for_url(&self, url: &str) -> reqwest::Client {
+        if let Some(ip) = parse_url_ip(url) {
+            if let Ok(client) = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .local_address(ip)
+                .build()
+            {
+                return client;
+            }
+        }
+        if url_prefers_ipv6(url) {
+            self.http_v6.clone()
+        } else {
+            self.http_v4.clone()
+        }
+    }
+
+    async fn proxy_segment(&self, headers: &HeaderMap, target_url: &str) -> Response {
+        let client = self.client_for_url(target_url);
+        let is_v6 = url_prefers_ipv6(target_url);
+        println!("[ProxySegment] Fetching segment (is_v6={}): {}", is_v6, target_url);
+
+        let mut req = client.get(target_url)
+            .header(header::REFERER, "https://www.youtube.com/")
+            .header(header::ORIGIN, "https://www.youtube.com");
+        if let Some(rng) = headers.get(header::RANGE) {
+            req = req.header(header::RANGE, rng);
+        }
+        let upstream = match req.send().await {
+            Ok(u) => u,
+            Err(e) => {
+                println!("[ProxySegment] request error: {}", e);
+                return error_response(StatusCode::BAD_GATEWAY, &e.to_string());
+            }
+        };
+        let status = upstream.status();
+        println!("[ProxySegment] status response: {}", status);
+        if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+            let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
+            println!("[ProxySegment] error body: {}", body_text);
+            return error_response(status, &body_text);
+        }
+
+        let mut builder = Response::builder().status(status);
+        for h in [header::CONTENT_TYPE, header::CONTENT_LENGTH, header::CONTENT_RANGE] {
+            if let Some(v) = upstream.headers().get(&h) {
+                builder = builder.header(h, v);
+            }
+        }
+        builder = builder.header(header::ACCEPT_RANGES, "bytes");
+        builder
+            .body(Body::from_stream(upstream.bytes_stream()))
+            .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
+    }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn from_hex(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for i in (0..hex.len()).step_by(2) {
+        let b = u8::from_str_radix(&hex[i..i + 2], 16).ok()?;
+        bytes.push(b);
+    }
+    Some(bytes)
+}
+
+fn url_prefers_ipv6(url: &str) -> bool {
+    let ip_str = if let Some(pos) = url.find("/ip/") {
+        &url[pos + 4..]
+    } else if let Some(pos) = url.find("ip=") {
+        &url[pos + 3..]
+    } else {
+        return false;
+    };
+    let end = ip_str.find(|c| c == '/' || c == '&').unwrap_or(ip_str.len());
+    let ip = &ip_str[..end];
+    ip.contains(':') || ip.contains("%3A") || ip.contains("%3a")
+}
+
+fn parse_url_ip(url: &str) -> Option<std::net::IpAddr> {
+    let ip_str = if let Some(pos) = url.find("/ip/") {
+        &url[pos + 4..]
+    } else if let Some(pos) = url.find("ip=") {
+        &url[pos + 3..]
+    } else {
+        return None;
+    };
+    let end = ip_str.find(|c| c == '/' || c == '&').unwrap_or(ip_str.len());
+    let ip_raw = &ip_str[..end];
+    let decoded = ip_raw.replace("%3A", ":").replace("%3a", ":");
+    decoded.parse::<std::net::IpAddr>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn test_fetch_segment() {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let _resolver = YtdlResolver::new(tokio::runtime::Handle::current()).unwrap();
+            let video = Video::new("X4VbdwhkE10").unwrap();
+            let info = video.get_info().await.unwrap();
+            println!("Parsed DASH Manifest URL: {:?}", info.dash_manifest_url);
+            println!("Parsed HLS Manifest URL: {:?}", info.hls_manifest_url);
+            
+            let hls_url = info.hls_manifest_url.clone().expect("HLS manifest URL not found");
+            println!("HLS URL: {}", hls_url);
+            
+            // Fetch the HLS master manifest
+            let client = reqwest::Client::new();
+            let resp = client.get(&hls_url)
+                .header("Referer", "https://www.youtube.com/")
+                .header("Origin", "https://www.youtube.com")
+                .send()
+                .await
+                .unwrap();
+            let manifest_text = resp.text().await.unwrap();
+            
+            // Extract the first sub-playlist URL
+            let mut sub_url = String::new();
+            for line in manifest_text.lines() {
+                if line.starts_with("https://") {
+                    sub_url = line.to_string();
+                    break;
+                }
+            }
+            assert!(!sub_url.is_empty(), "No sub-playlist URL found");
+            println!("Sub URL: {}", sub_url);
+            
+            // Fetch the sub-playlist
+            let resp = client.get(&sub_url)
+                .header("Referer", "https://www.youtube.com/")
+                .header("Origin", "https://www.youtube.com")
+                .send()
+                .await
+                .unwrap();
+            let sub_manifest_text = resp.text().await.unwrap();
+            
+            // Extract the first segment URL
+            let mut segment_url = String::new();
+            for line in sub_manifest_text.lines() {
+                if line.starts_with("https://") {
+                    segment_url = line.to_string();
+                    break;
+                }
+            }
+            assert!(!segment_url.is_empty(), "No segment URL found");
+            println!("Segment URL: {}", segment_url);
+            
+            // Let's try fetching the segment using different local IP bindings and User-Agents
+            let ip_addresses = vec![
+                None, // default
+                Some("2600:8805:1a00:3270::3901"),
+                Some("2600:8805:1a00:3270:d1f:c271:b7ad:fa91"),
+            ];
+            
+            let user_agents = vec![
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3513.0 Safari/537.36",
+                "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
+            ];
+            
+            for ip_str in ip_addresses {
+                for &ua in &user_agents {
+                    let mut builder = reqwest::Client::builder().user_agent(ua);
+                    if let Some(ip) = ip_str {
+                        if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+                            builder = builder.local_address(addr);
+                        }
+                    }
+                    
+                    let test_client = match builder.build() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            println!("Failed to build client for IP {:?}: {}", ip_str, e);
+                            continue;
+                        }
+                    };
+                    
+                    let res = test_client.get(&segment_url)
+                        .header("Referer", "https://www.youtube.com/")
+                        .header("Origin", "https://www.youtube.com")
+                        .send()
+                        .await;
+                    
+                    match res {
+                        Ok(r) => {
+                            println!("With IP {:?}, UA {}: Status {}", ip_str, &ua[..24], r.status());
+                            if r.status() == 403 {
+                                println!("  Headers:");
+                                for (name, value) in r.headers() {
+                                    println!("    {}: {:?}", name, value);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("With IP {:?}, UA {}: Error {}", ip_str, &ua[..24], e);
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     /// Network probe (Go `probe_test.go::TestProbeResolution`). `#[ignore]`d so
     /// the offline gate stays green — YouTube extraction is flaky and the spine
@@ -529,12 +947,23 @@ mod tests {
     fn dump_formats() {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let video = Video::new("BGXOYfZMR0w").unwrap();
+            let video = Video::new("X4VbdwhkE10").unwrap();
             match video.get_info().await {
                 Ok(info) => {
-                    eprintln!("dash={:?} hls={:?} formats={}", info.dash_manifest_url.is_some(), info.hls_manifest_url.is_some(), info.formats.len());
-                    for f in &info.formats {
-                        eprintln!("itag={} mime={} audio={} br={} url_len={}", f.itag, f.mime_type.mime, f.has_audio, f.bitrate, f.url.len());
+                    eprintln!("dash={:?} hls={:?} formats={}", info.dash_manifest_url.as_ref(), info.hls_manifest_url.as_ref(), info.formats.len());
+                    if let Some(hls_url) = info.hls_manifest_url {
+                        let client = reqwest::Client::new();
+                        let resp = client.get(&hls_url).send().await.unwrap();
+                        let text = resp.text().await.unwrap();
+                        // Find the first URL in the manifest
+                        if let Some(pos) = text.find("https://") {
+                            let url_end = text[pos..].find('\n').unwrap_or(text[pos..].len());
+                            let sub_url = text[pos..pos + url_end].trim();
+                            eprintln!("Sub-playlist URL: {}", sub_url);
+                            let sub_resp = client.get(sub_url).send().await.unwrap();
+                            let sub_text = sub_resp.text().await.unwrap();
+                            eprintln!("Sub-playlist Content:\n{}", sub_text);
+                        }
                     }
                 }
                 Err(e) => eprintln!("get_info error: {e}"),

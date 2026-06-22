@@ -126,6 +126,51 @@ impl X11Window {
         let _ = i.conn.flush();
     }
 
+    /// Sets EWMH popup/dropdown/utility window type hints on the window and requests
+    /// always-on-top. This tells Mutter/compositors that this is a dropdown menu,
+    /// permitting custom absolute positioning rather than centering it.
+    pub fn apply_menu_styles(&self) {
+        let i = &self.inner;
+        let window_type_dropdown = intern(&i.conn, b"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU").unwrap_or(0);
+        let window_type_popup = intern(&i.conn, b"_NET_WM_WINDOW_TYPE_POPUP_MENU").unwrap_or(0);
+        let window_type_utility = intern(&i.conn, b"_NET_WM_WINDOW_TYPE_UTILITY").unwrap_or(0);
+        
+        let mut types = Vec::new();
+        if window_type_dropdown != 0 {
+            types.push(window_type_dropdown);
+        }
+        if window_type_popup != 0 {
+            types.push(window_type_popup);
+        }
+        if window_type_utility != 0 {
+            types.push(window_type_utility);
+        }
+        
+        if !types.is_empty() {
+            let _ = i.conn.change_property32(
+                PropMode::REPLACE,
+                i.window,
+                i.atoms.window_type,
+                AtomEnum::ATOM,
+                &types,
+            );
+        }
+        
+        let ev = ClientMessageEvent::new(
+            32,
+            i.window,
+            i.atoms.state,
+            [NET_WM_STATE_ADD, i.atoms.state_above, 0, 0, 0],
+        );
+        let _ = i.conn.send_event(
+            false,
+            i.root,
+            EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT,
+            ev,
+        );
+        let _ = i.conn.flush();
+    }
+
     /// Positions the bar on `mon`'s configured edge at full monitor width and
     /// reserves the strip via `_NET_WM_STRUT_PARTIAL` when the edge is reservable
     /// (struts measure from the ROOT screen edge → multi-monitor aware via
@@ -355,6 +400,10 @@ impl WindowOps for X11Window {
         c.last_mon = mon.index;
         c.last = v;
         v
+    }
+
+    fn is_hovered(&self) -> bool {
+        true
     }
 
     fn auto_hide_supported(&self) -> bool {

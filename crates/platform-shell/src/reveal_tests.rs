@@ -20,8 +20,6 @@ struct FakeState {
     w: i32,
     h: i32,
     moves: Vec<(i32, i32)>,
-    shows: i32,
-    hides: i32,
     click_sets: Vec<bool>,
     auto_hide: bool,
     full_screen: bool,
@@ -62,9 +60,6 @@ impl FakeOps {
     fn move_count(&self) -> usize {
         self.st.lock().unwrap().moves.len()
     }
-    fn hide_count(&self) -> i32 {
-        self.st.lock().unwrap().hides
-    }
     fn last_move(&self) -> (i32, i32) {
         let s = self.st.lock().unwrap();
         *s.moves.last().unwrap()
@@ -86,12 +81,8 @@ impl WindowOps for FakeOps {
         s.moves.push((x, y));
     }
     fn clip_top(&self, _w: i32, _h: i32, _t: i32) {}
-    fn show(&self) {
-        self.st.lock().unwrap().shows += 1;
-    }
-    fn hide(&self) {
-        self.st.lock().unwrap().hides += 1;
-    }
+    fn show(&self) {}
+    fn hide(&self) {}
     fn set_click_through(&self, e: bool) {
         self.st.lock().unwrap().click_sets.push(e);
     }
@@ -101,6 +92,12 @@ impl WindowOps for FakeOps {
     }
     fn full_screen_active(&self, _mon: &MonitorInfo) -> bool {
         self.st.lock().unwrap().full_screen
+    }
+    fn is_hovered(&self) -> bool {
+        let s = self.st.lock().unwrap();
+        let cx = s.cursor_x;
+        let cy = s.cursor_y;
+        cx >= 100 && cx < 2020 && cy >= 50 && cy < 90
     }
     fn auto_hide_supported(&self) -> bool {
         self.st.lock().unwrap().auto_hide
@@ -213,7 +210,7 @@ fn recv_done(rx: &std::sync::mpsc::Receiver<u64>) -> u64 {
 #[test]
 fn slide_reaches_target() {
     let fake = FakeOps::new(false);
-    fake.set_pos(100, 10); // start collapsed (off-screen)
+    fake.set_pos(100, 12); // start collapsed (off-screen)
     let clk = ManualClock::new();
     let (done, rx) = done_channel();
     let c = new_test_controller(&fake, &clk, Some(done));
@@ -228,14 +225,13 @@ fn slide_reaches_target() {
     recv_done(&rx);
     assert_eq!(fake.last_move(), (100, 50), "after expand");
 
-    // Collapse → reaches off-screen Y (10) and hides.
+    // Collapse → reaches off-screen Y (12) (leaves 2px strip on-screen).
     c.set_expanded(false);
     wait_for(|| clk.ticker_count() >= 2, "collapse ticker");
     clk.advance(slide);
     clk.tick(1);
     recv_done(&rx);
-    assert_eq!(fake.last_move(), (100, 10), "after collapse");
-    assert!(fake.hide_count() > 0, "collapse did not hide the window");
+    assert_eq!(fake.last_move(), (100, 12), "after collapse");
 }
 
 #[test]

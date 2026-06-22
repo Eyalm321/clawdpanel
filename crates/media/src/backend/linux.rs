@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use std::collections::HashSet;
+use once_cell::sync::Lazy;
 
 use gstreamer as gst;
 use gst::prelude::*;
@@ -148,6 +150,10 @@ pub fn new_player(events: mpsc::Sender<Event>) -> Result<Box<dyn Player>> {
     // target is never reached and the pipeline sits in buffering limbo forever.
     playbin.set_property_from_str("flags", "audio+soft-volume");
 
+    // Recursively inject User-Agent to all HTTP source elements created in the bin hierarchy
+    CONFIGURED_ELEMENTS.lock().clear();
+    setup_user_agent_injection(&playbin);
+
     let shared = Arc::new(Shared {
         name: "radio-playbin".to_string(),
         playbin,
@@ -171,6 +177,47 @@ pub fn new_player(events: mpsc::Sender<Event>) -> Result<Box<dyn Player>> {
         shared,
         bus_thread: Mutex::new(Some(bus_thread)),
     }))
+}
+
+static CONFIGURED_ELEMENTS: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
+fn setup_user_agent_injection(element: &gst::Element) {
+    use gst::glib::translate::ToGlibPtr;
+    let ptr = ToGlibPtr::<*mut gst::ffi::GstElement>::to_glib_none(element).0 as usize;
+    {
+        let mut set = CONFIGURED_ELEMENTS.lock();
+        if !set.insert(ptr) {
+            return;
+        }
+    }
+
+    let name = element.name();
+    println!("[UserAgentInject] Inspecting element: {}", name);
+    if element.has_property("user-agent", None) {
+        println!("[UserAgentInject] Setting user-agent and extra-headers on: {}", name);
+        element.set_property("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        
+        let extra_headers = gst::Structure::builder("headers")
+            .field("Referer", "https://www.youtube.com/")
+            .field("Origin", "https://www.youtube.com")
+            .build();
+        element.set_property("extra-headers", &extra_headers);
+    }
+    if let Ok(bin) = element.clone().dynamic_cast::<gst::Bin>() {
+        println!("[UserAgentInject] Inspecting bin children and connecting element-added signal on bin: {}", name);
+        // Recurse on existing children first
+        for child in bin.children() {
+            setup_user_agent_injection(&child);
+        }
+        // Connect signal for future children
+        bin.connect("element-added", false, move |values| {
+            if let Some(sub_element) = values.get(1).and_then(|val| val.get::<gst::Element>().ok()) {
+                println!("[UserAgentInject] Bin '{}' added element: {}", name, sub_element.name());
+                setup_user_agent_injection(&sub_element);
+            }
+            None
+        });
+    }
 }
 
 impl Player for LinuxPlayer {

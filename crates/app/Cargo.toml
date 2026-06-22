@@ -19,7 +19,7 @@ clawdpanel-platform-shell = { path = "../platform-shell" }
 # Needed for the event loop, the smoke-run Timer and the winit-030 accessor used
 # to make the window frameless + always-on-top. Features mirror crates/ui.
 slint = { version = "1", default-features = false, features = [
-    "std", "backend-default", "renderer-femtovg", "renderer-software",
+    "std", "backend-winit", "renderer-femtovg", "renderer-software",
     "compat-1-2", "unstable-winit-030",
 ] }
 # Background poll loop: a tokio runtime on its own thread drives the async

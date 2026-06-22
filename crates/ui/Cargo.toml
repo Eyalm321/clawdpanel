@@ -9,7 +9,7 @@ clawdpanel-types.workspace = true
 # frameless-window config (see ~/dev/borderless); `unstable-winit-030` exposes
 # slint::winit_030 so we can flip decorations/always-on-top from Rust.
 slint = { version = "1", default-features = false, features = [
-    "std", "backend-default", "renderer-femtovg", "renderer-software",
+    "std", "backend-winit", "renderer-femtovg", "renderer-software",
     "compat-1-2", "unstable-winit-030",
 ] }
 

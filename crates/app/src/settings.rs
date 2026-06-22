@@ -132,6 +132,8 @@ pub fn set_active_account(ui: &Rc<UiState>, idx: i32) {
         acc
     };
 
+    crate::sync_tray_account(ui.cfg.borrow().active_account.max(0) as usize);
+
     if let Ok(mut a) = ui.shared.active.lock() {
         a.path = PathBuf::from(&acc.path);
         a.name = acc.name.clone();

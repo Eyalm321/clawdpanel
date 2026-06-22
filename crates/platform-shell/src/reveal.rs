@@ -92,6 +92,7 @@ struct Shared {
     /// Bumped on every `set_expanded`; a running `animate_y` exits once it sees
     /// the bump, so a new slide cleanly supersedes an in-flight one.
     anim_gen: AtomicU64,
+    last_collapse_cursor: Mutex<Option<(i32, i32)>>,
 }
 
 /// Owns the slide animation and click-through state behind [`WindowOps`]. Holds a
@@ -130,13 +131,13 @@ fn on_screen_y(s: &Snapshot) -> i32 {
     }
 }
 
-/// Fully clears the screen past the docked edge so the window is gone when
-/// collapsed.
+/// Position of the window when collapsed: positioned off-screen except for a
+/// 2-pixel trigger strip at the screen edge.
 fn off_screen_y(s: &Snapshot) -> i32 {
     if bottom_docked(s) {
-        s.mon.top + s.mon.height
+        s.mon.top + s.mon.height - 2
     } else {
-        s.mon.top - s.bar_height
+        s.mon.top - s.bar_height + 2
     }
 }
 
@@ -157,6 +158,7 @@ impl Controller {
                 durs: Mutex::new(Durations::default()),
                 st: Mutex::new(State::default()),
                 anim_gen: AtomicU64::new(0),
+                last_collapse_cursor: Mutex::new(None),
             }),
         }
     }
@@ -217,9 +219,8 @@ impl Controller {
         if !expanded {
             self.sh.ops.move_to(s.mon.left, off_screen_y(&s));
             // Full clip so even if a monitor sits above, the window can't spill
-            // onto it before Hide takes effect.
+            // onto it.
             self.sh.ops.clip_top(width_px(&s.mon), s.bar_height, s.bar_height);
-            self.sh.ops.hide();
         }
     }
 
@@ -253,7 +254,16 @@ impl Controller {
             }
         };
 
+        eprintln!("[reveal] set_expanded: {} (pinned: {})", expanded, s.pinned);
         self.apply_click_through();
+
+        if !expanded {
+            let (cx, cy) = self.sh.ops.cursor_pos();
+            *self.sh.last_collapse_cursor.lock().unwrap() = Some((cx, cy));
+            eprintln!("[reveal] set_expanded(false): saved collapse cursor pos: ({}, {})", cx, cy);
+        } else {
+            *self.sh.last_collapse_cursor.lock().unwrap() = None;
+        }
 
         let target = if expanded {
             on_screen_y(&s)
@@ -265,7 +275,7 @@ impl Controller {
             self.sh.ops.show(); // reveal the off-screen window so move_to can slide it in
         }
         let sh = Arc::clone(&self.sh);
-        std::thread::spawn(move || animate_y(sh, s, target, generation, !expanded));
+        std::thread::spawn(move || animate_y(sh, s, target, generation));
     }
 
     /// Sets the window's click-through from the user preference OR, where
@@ -278,23 +288,24 @@ impl Controller {
         self.sh.ops.set_click_through(s.user_click_through || auto_hide);
     }
 
-    /// Reports whether the OS cursor is inside the bar's hit box: the monitor's
-    /// full width, from its true top edge down to the bar's bottom.
+    /// Reports whether the OS cursor is inside the bar's hit box.
+    /// Since the window is kept mapped and positioned with a 2-pixel trigger strip
+    /// at the screen edge when collapsed, we can rely entirely on the window's
+    /// hover detection.
     fn cursor_over_bar(&self, s: &Snapshot) -> bool {
-        let (cx, cy) = self.sh.ops.cursor_pos();
-        if cx < 0 && cy < 0 {
-            return false; // platform stub (no cursor source)
-        }
-        let width = width_px(&s.mon);
-        if cx < s.mon.left || cx >= s.mon.left + width {
+        if !self.sh.ops.is_hovered() {
             return false;
         }
-        if bottom_docked(s) {
-            let mon_bottom = s.mon.top + s.mon.height;
-            cy >= mon_bottom - s.bar_height && cy < mon_bottom
-        } else {
-            cy >= s.mon.top && cy < s.mon.top + s.mon.work_top_offset + s.bar_height
+        if !s.expanded {
+            let (cx, cy) = self.sh.ops.cursor_pos();
+            let last_collapse = self.sh.last_collapse_cursor.lock().unwrap();
+            if let Some((lcx, lcy)) = *last_collapse {
+                if cx == lcx && cy == lcy {
+                    return false;
+                }
+            }
         }
+        true
     }
 
     /// Forces the bar expanded while the inline accounts editor is shown (it's
@@ -355,6 +366,18 @@ impl Controller {
                 expanded: st.expanded,
             }
         };
+
+        let (cx, cy) = self.sh.ops.cursor_pos();
+        thread_local! {
+            static LAST_POS: std::cell::Cell<(i32, i32)> = std::cell::Cell::new((-999, -999));
+        }
+        LAST_POS.with(|cell| {
+            let last = cell.get();
+            if last != (cx, cy) {
+                cell.set((cx, cy));
+                eprintln!("[reveal] cursor moved to ({}, {}), pinned={}, expanded={}", cx, cy, s.pinned, s.expanded);
+            }
+        });
 
         // Fullscreen takes precedence over pin/hover: while a frontmost app is in
         // native fullscreen, force-collapse the bar (the tray icon stays). On
@@ -427,17 +450,16 @@ impl RunHandle {
 
 /// Slides the window's top edge to `target_y` over `slide` with an ease-out
 /// cubic, repositioning the top clip each frame so the portion above `mon.top`
-/// stays masked (multi-monitor spill). If `hide_after`, the window is hidden
-/// once it reaches the off-screen target. A newer `set_expanded` bumps
+/// stays masked (multi-monitor spill). A newer `set_expanded` bumps
 /// `anim_gen`; this loop sees the bump and exits without touching the window.
-fn animate_y(sh: Arc<Shared>, s: Snapshot, target_y: i32, generation: u64, hide_after: bool) {
-    animate_y_run(&sh, s, target_y, generation, hide_after);
+fn animate_y(sh: Arc<Shared>, s: Snapshot, target_y: i32, generation: u64) {
+    animate_y_run(&sh, s, target_y, generation);
     if let Some(d) = &sh.on_done {
         d(generation);
     }
 }
 
-fn animate_y_run(sh: &Shared, s: Snapshot, target_y: i32, generation: u64, hide_after: bool) {
+fn animate_y_run(sh: &Shared, s: Snapshot, target_y: i32, generation: u64) {
     let x = s.mon.left;
     let mon_top = s.mon.top;
     let width = width_px(&s.mon);
@@ -459,10 +481,8 @@ fn animate_y_run(sh: &Shared, s: Snapshot, target_y: i32, generation: u64, hide_
     };
 
     let (_, start_y, _, _) = sh.ops.window_rect();
+    eprintln!("[reveal] animate_y_run: start_y={}, target_y={}", start_y, target_y);
     if start_y == target_y {
-        if hide_after {
-            sh.ops.hide();
-        }
         return;
     }
     let start = (sh.now)();
@@ -480,9 +500,6 @@ fn animate_y_run(sh: &Shared, s: Snapshot, target_y: i32, generation: u64, hide_
         if elapsed >= slide {
             sh.ops.move_to(x, target_y);
             sh.ops.clip_top(width, bar_h, clip_for(target_y));
-            if hide_after {
-                sh.ops.hide();
-            }
             break;
         }
         let t = elapsed.as_secs_f64() / slide.as_secs_f64();

@@ -9,7 +9,8 @@ import { Theme, ThemeId } from "theme.slint";
 // `@children` flow into the inner row so callers just drop content in.
 export component SegBox inherits Rectangle {
     height: 100%;
-    HorizontalLayout {
+    width: layout.preferred-width;
+    layout := HorizontalLayout {
         padding-left: 5px;
         padding-right: 5px;
         spacing: 5px;
@@ -31,7 +32,8 @@ export component Glyph inherits Text {
 // `.sep` "·": muted, 8px, normal weight, opacity .4, 5px padding each side.
 export component Sep inherits Rectangle {
     height: 100%;
-    HorizontalLayout {
+    width: layout.preferred-width;
+    layout := HorizontalLayout {
         padding-left: 5px;
         padding-right: 5px;
         alignment: center;
@@ -66,6 +68,7 @@ export component Arrow inherits Rectangle {
         font-size: root.size;
         opacity: root.enabled ? 1.0 : 0.3;
         color: (ta.has-hover && root.enabled) ? Theme.arrow-hover : Theme.muted;
+        font-weight: 400;
     }
 }
 
@@ -76,36 +79,87 @@ export component Invader inherits Rectangle {
     in property <bool> hover: false;
     width: 15px;
     height: 11px;
-    property <string> d: "M2,0h1v1h-1z M8,0h1v1h-1z M3,1h1v1h-1z M7,1h1v1h-1z M2,2h7v1h-7z M1,3h2v1h-2z M4,3h1v1h-1z M6,3h1v1h-1z M8,3h2v1h-2z M0,4h11v1h-11z M0,5h1v1h-1z M2,5h7v1h-7z M10,5h1v1h-1z M0,6h1v1h-1z M2,6h1v1h-1z M8,6h1v1h-1z M10,6h1v1h-1z M3,7h2v1h-2z M6,7h2v1h-2z";
-    // Glow halo: steady on Fallout/Amber, on-hover for every theme.
-    if Theme.invader-glow || root.hover : Path {
+
+    property <length> w: self.width / 11;
+    property <length> h: self.height / 8;
+
+    // Glow:
+    if Theme.invader-glow || root.hover : Rectangle {
         x: -2px;
         y: -2px;
         width: parent.width + 4px;
         height: parent.height + 4px;
-        viewbox-width: 11;
-        viewbox-height: 8;
-        commands: root.d;
-        fill: root.hover ? Theme.clay.with-alpha(0.5) : Theme.invader-fill.with-alpha(0.45);
+        property <length> gw: self.width / 11;
+        property <length> gh: self.height / 8;
+        property <color> glow-color: root.hover ? Theme.clay.with-alpha(0.5) : Theme.invader-fill.with-alpha(0.45);
+        
+        // Row 0
+        Rectangle { x: 2 * gw; y: 0 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 8 * gw; y: 0 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 1
+        Rectangle { x: 3 * gw; y: 1 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 7 * gw; y: 1 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 2
+        Rectangle { x: 2 * gw; y: 2 * gh; width: 7 * gw; height: gh; background: glow-color; }
+        // Row 3
+        Rectangle { x: 1 * gw; y: 3 * gh; width: 2 * gw; height: gh; background: glow-color; }
+        Rectangle { x: 4 * gw; y: 3 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 6 * gw; y: 3 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 8 * gw; y: 3 * gh; width: 2 * gw; height: gh; background: glow-color; }
+        // Row 4
+        Rectangle { x: 0 * gw; y: 4 * gh; width: 11 * gw; height: gh; background: glow-color; }
+        // Row 5
+        Rectangle { x: 0 * gw; y: 5 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 2 * gw; y: 5 * gh; width: 7 * gw; height: gh; background: glow-color; }
+        Rectangle { x: 10 * gw; y: 5 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 6
+        Rectangle { x: 0 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 2 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 8 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 10 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 7
+        Rectangle { x: 3 * gw; y: 7 * gh; width: 2 * gw; height: gh; background: glow-color; }
+        Rectangle { x: 6 * gw; y: 7 * gh; width: 2 * gw; height: gh; background: glow-color; }
     }
-    Path {
-        width: 100%;
-        height: 100%;
-        viewbox-width: 11;
-        viewbox-height: 8;
-        commands: root.d;
-        fill: Theme.invader-fill;
-    }
+
+    // Main Invader:
+    // Row 0
+    Rectangle { x: 2 * w; y: 0 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 8 * w; y: 0 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 1
+    Rectangle { x: 3 * w; y: 1 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 7 * w; y: 1 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 2
+    Rectangle { x: 2 * w; y: 2 * h; width: 7 * w; height: h; background: Theme.invader-fill; }
+    // Row 3
+    Rectangle { x: 1 * w; y: 3 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 4 * w; y: 3 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 6 * w; y: 3 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 8 * w; y: 3 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+    // Row 4
+    Rectangle { x: 0 * w; y: 4 * h; width: 11 * w; height: h; background: Theme.invader-fill; }
+    // Row 5
+    Rectangle { x: 0 * w; y: 5 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 2 * w; y: 5 * h; width: 7 * w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 10 * w; y: 5 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 6
+    Rectangle { x: 0 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 2 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 8 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 10 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 7
+    Rectangle { x: 3 * w; y: 7 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 6 * w; y: 7 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
 }
 
 // `.pin-icon`: gray when unpinned, clay (theme accent) when pinned. CSS also
-// tilts the glyph 45° when pinned, but Slint `Path` has no rotation-angle and no
-// blur/transform, so the rotate is dropped — the clay/gray swap carries the
-// state (noted as an unmatched effect in the commit message).
+// tilts the glyph 45° when pinned.
 export component PinIcon inherits Rectangle {
     in property <bool> pinned: true;
     width: 12px;
     height: 12px;
+    transform-rotation: root.pinned ? 45deg : 0deg;
+    animate transform-rotation { duration: 120ms; }
     Path {
         width: 100%;
         height: 100%;
@@ -122,7 +176,7 @@ export component GhostChip inherits Rectangle {
     in property <bool> disabled: false;
     callback clicked;
     height: 16px;
-    min-width: 16px;
+    width: max(16px, layout.preferred-width);
     border-radius: 4px;
     background: ta.has-hover && !root.disabled
         ? rgba(255, 255, 255, 0.11)
@@ -135,11 +189,14 @@ export component GhostChip inherits Rectangle {
         mouse-cursor: root.disabled ? MouseCursor.default : MouseCursor.pointer;
         clicked => { if (!root.disabled) { root.clicked(); } }
     }
-    HorizontalLayout {
-        padding-left: 3px;
-        padding-right: 3px;
+    VerticalLayout {
         alignment: center;
-        @children
+        layout := HorizontalLayout {
+            padding-left: 3px;
+            padding-right: 3px;
+            alignment: center;
+            @children
+        }
     }
 }
 

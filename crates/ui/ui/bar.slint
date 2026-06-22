@@ -177,14 +177,17 @@ component RadioStatusIcon inherits Rectangle {
 
 // The radio cluster: « ‹ TITLE/scrubber › » ▶/⏸ shuffle | VOL nn%. Behavior is
 // driven entirely by the RadioBridge global.
-component RadioCluster inherits SegBox {
+component RadioCluster inherits Rectangle {
+    height: 100%;
+    width: layout.preferred-width;
+
     // Status-glyph color (style.css): playing → green, loading → clay, error →
     // red, off/idle → muted. (The old port mis-mapped on→clay, load→lbl.)
     property <color> status-tint:
         RadioBridge.status == "err" ? Theme.red :
         RadioBridge.status == "on" ? Theme.green :
         RadioBridge.status == "load" ? Theme.clay :
-        Theme.muted;
+        (radio-ta.has-hover ? Theme.text : Theme.muted);
     // Scrubber fill: clay (`.radio-tl-fill`), green @ .5 alpha for a livestream
     // (`.radio-timeline.live .radio-tl-fill`) — independent of the status color.
     property <color> seek-tint: root.is-live ? Theme.green.with-alpha(0.5) : Theme.clay;
@@ -194,6 +197,15 @@ component RadioCluster inherits SegBox {
         : 1.0;
     property <length> scroll-x: 0;
     property <string> marquee-text: "NOW PLAYING " + RadioBridge.station-name + " · ";
+
+    property <color> title-color: radio-ta.has-hover ? Theme.clay : Theme.lbl;
+    property <color> vol-lbl-color: radio-ta.has-hover ? Theme.clay : Theme.lbl;
+    property <color> vol-val-color: radio-ta.has-hover ? Theme.text : Theme.clay;
+
+    radio-ta := TouchArea {
+        width: 100%;
+        height: 100%;
+    }
 
     // Marquee scroll: nudge the title left while playing, re-entering from the
     // right edge after a fixed run (Slint has no looping animation, and ids
@@ -207,27 +219,30 @@ component RadioCluster inherits SegBox {
         }
     }
 
-    // Outer gap is the `.seg` 5px (between each transport cluster and the
-    // title); the keys WITHIN a cluster overlap (`#seg-radio .arrow + .arrow`
-    // etc. `margin-left: -3px` against the 5px gap → a 2px cluster pitch).
-    HorizontalLayout {
+    layout := HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
         spacing: 5px;
         alignment: start;
 
         // Left transport cluster [« ‹] (2px internal pitch).
-        HorizontalLayout {
-            spacing: 2px;
-            alignment: start;
-            // « prev station
-            if RadioBridge.stations-count >= 2 : GhostChip {
-                clicked => { RadioBridge.next-station(-1); }
-                Glyph { text: "«"; font-size: 9px; color: Theme.muted; }
-            }
-            // ‹ prev track (grayed when the station can't step)
-            GhostChip {
-                disabled: !RadioBridge.track-nav-active;
-                clicked => { RadioBridge.track-prev(); }
-                Glyph { text: "‹"; font-size: 9px; color: Theme.muted; }
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                width: self.preferred-width;
+                spacing: 2px;
+                alignment: start;
+                // « prev station
+                if RadioBridge.stations-count >= 2 : GhostChip {
+                    clicked => { RadioBridge.next-station(-1); }
+                    Glyph { text: "«"; font-size: 9px; color: Theme.muted; font-weight: 400; }
+                }
+                // ‹ prev track (grayed when the station can't step)
+                GhostChip {
+                    disabled: !RadioBridge.track-nav-active;
+                    clicked => { RadioBridge.track-prev(); }
+                    Glyph { text: "‹"; font-size: 9px; color: Theme.muted; font-weight: 400; }
+                }
             }
         }
 
@@ -240,12 +255,12 @@ component RadioCluster inherits SegBox {
             if !RadioBridge.timeline-open && RadioBridge.status == "on" : Glyph {
                 x: root.scroll-x;
                 text: root.marquee-text;
-                color: Theme.lbl;
+                color: root.title-color;
             }
             if !RadioBridge.timeline-open && RadioBridge.status != "on" : Glyph {
                 x: 0;
                 text: RadioBridge.station-name == "" ? "CLAUDE FM" : RadioBridge.station-name;
-                color: Theme.lbl;
+                color: root.title-color;
             }
             // Click the title to reveal the scrubber.
             if !RadioBridge.timeline-open : TouchArea {
@@ -295,52 +310,58 @@ component RadioCluster inherits SegBox {
         }
 
         // Right transport cluster [› » ▶ shuffle] (2px internal pitch).
-        HorizontalLayout {
-            spacing: 2px;
-            alignment: start;
-            // › next track
-            GhostChip {
-                disabled: !RadioBridge.track-nav-active;
-                clicked => { RadioBridge.track-next(); }
-                Glyph { text: "›"; font-size: 9px; color: Theme.muted; }
-            }
-            // » next station
-            if RadioBridge.stations-count >= 2 : GhostChip {
-                clicked => { RadioBridge.next-station(1); }
-                Glyph { text: "»"; font-size: 9px; color: Theme.muted; }
-            }
-
-            // play / pause
-            GhostChip {
-                clicked => { RadioBridge.play-pause(); }
-                RadioStatusIcon {
-                    status: RadioBridge.status;
-                    tint: root.status-tint;
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                width: self.preferred-width;
+                spacing: 2px;
+                alignment: start;
+                // › next track
+                GhostChip {
+                    disabled: !RadioBridge.track-nav-active;
+                    clicked => { RadioBridge.track-next(); }
+                    Glyph { text: "›"; font-size: 9px; color: Theme.muted; font-weight: 400; }
                 }
-            }
-            // shuffle (clay when on, muted when off)
-            GhostChip {
-                clicked => { RadioBridge.toggle-shuffle(); }
-                Path {
-                    width: 10px;
-                    height: 10px;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
-                    fill: transparent;
-                    stroke: RadioBridge.shuffle-on ? Theme.clay : Theme.muted;
-                    stroke-width: 2.2px;
+                // » next station
+                if RadioBridge.stations-count >= 2 : GhostChip {
+                    clicked => { RadioBridge.next-station(1); }
+                    Glyph { text: "»"; font-size: 9px; color: Theme.muted; font-weight: 400; }
+                }
+
+                // play / pause
+                GhostChip {
+                    clicked => { RadioBridge.play-pause(); }
+                    RadioStatusIcon {
+                        status: RadioBridge.status;
+                        tint: root.status-tint;
+                    }
+                }
+                // shuffle (clay when on, muted when off)
+                GhostChip {
+                    clicked => { RadioBridge.toggle-shuffle(); }
+                    Path {
+                        width: 10px;
+                        height: 10px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22 M18 2l4 4-4 4 M2 6h1.9c1.5 0 2.9.9 3.6 2.2 M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8 M18 14l4 4-4 4";
+                        fill: transparent;
+                        stroke: RadioBridge.shuffle-on ? Theme.clay : Theme.muted;
+                        stroke-width: 0.92px;
+                    }
                 }
             }
         }
-    }
-    Sep {}
-    Glyph { text: "VOL"; color: Theme.lbl; }
-    Rectangle {
-        vol := Glyph { text: RadioBridge.volume-pct + "%"; color: Theme.clay; }
-        TouchArea {
-            mouse-cursor: pointer;
-            clicked => { RadioBridge.cycle-volume(); }
+
+        Sep {}
+        Glyph { text: "VOL"; color: root.vol-lbl-color; }
+        Rectangle {
+            width: vol.preferred-width;
+            vol := Glyph { text: RadioBridge.volume-pct + "%"; color: root.vol-val-color; }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { RadioBridge.cycle-volume(); }
+            }
         }
     }
 }
@@ -426,6 +447,14 @@ export component BarWindow inherits Window {
     preferred-width: 1920px;
     preferred-height: 28px;
     min-height: 28px;
+    in-out property <length> window-width: 1920px;
+    width: root.window-width;
+
+    in-out property <bool> has-hover: window-ta.has-hover;
+    window-ta := TouchArea {
+        width: 100%;
+        height: 100%;
+    }
 
     // OFFLINE renders as IDLE on the bar (and stays lavender) — main.js maps it
     // before setting the class, so the gray `.offline` rule never actually fires.
@@ -465,13 +494,13 @@ export component BarWindow inherits Window {
         // ── Brand (always visible) ── padding 0 6px 0 2px, clickable.
         Rectangle {
             height: 100%;
-            HorizontalLayout {
-                padding-left: 2px;
-                padding-right: 6px;
-                alignment: center;
-                brand := Invader {
-                    hover: brand-ta.has-hover;
-                }
+            width: 23px; // 15px + 2px left + 6px right
+            brand := Invader {
+                x: 2px;
+                y: (parent.height - self.height) / 2;
+                width: 15px;
+                height: 11px;
+                hover: brand-ta.has-hover;
             }
             brand-ta := TouchArea {
                 mouse-cursor: pointer;
@@ -487,6 +516,7 @@ export component BarWindow inherits Window {
                 clicked => { Backend.cycle-account(-1); }
             }
             Rectangle {
+                width: acct.preferred-width;
                 acct := Glyph {
                     text: ClaudeBar.data.account-name == "" ? "---" : ClaudeBar.data.account-name;
                     color: Theme.clay;
@@ -596,7 +626,8 @@ export component BarWindow inherits Window {
             }
             Glyph { text: "THEME"; color: Theme.lbl; }
             Rectangle {
-                Glyph {
+                width: theme-glyph.preferred-width;
+                theme-glyph := Glyph {
                     text: root.theme-name();
                     color: Theme.clay;
                 }
@@ -615,11 +646,11 @@ export component BarWindow inherits Window {
         // ── Pin toggle ──
         SegBox {
             Rectangle {
-                HorizontalLayout {
-                    padding-left: 4px;
-                    padding-right: 4px;
-                    alignment: center;
-                    PinIcon { pinned: ClaudeBar.pinned; }
+                width: 20px;
+                PinIcon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    pinned: ClaudeBar.pinned;
                 }
                 TouchArea {
                     mouse-cursor: pointer;
