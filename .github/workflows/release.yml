@@ -34,31 +34,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # ── TODO stubs (no build): Windows/macOS packaging pending #57 / #58 ──
-      - name: Windows packaging (pending S10 #57)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          echo "::notice title=Windows leg stubbed::The Rust NSIS installer build"
-          echo "is pending S10 (#57 — Windows platform-shell impl). The existing"
-          echo "build/windows/installer/project.nsi + wails_tools.nsh are retained"
-          echo "in-tree and will be rewired into this leg when #57 lands."
-          exit 0
-
-      - name: macOS packaging (pending S11 #58)
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          echo "::notice title=macOS leg stubbed::The Rust .app/.pkg build is"
-          echo "pending S11 (#58 — macOS platform-shell impl, incl. AX pushdown)."
-          echo "The existing build/darwin scripts (pkgbuild) are retained in-tree"
-          echo "and will be rewired into this leg when #58 lands."
-          exit 0
-
-      # ── Linux: the only fully-wired leg for S12-prep ──
+      # Setup Rust toolchain on all platforms
       - name: Setup Rust toolchain
-        if: matrix.os == 'ubuntu-latest'
         uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install macOS Rust targets
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
       - name: Install Linux build deps
         if: matrix.os == 'ubuntu-latest'
@@ -78,7 +62,6 @@ jobs:
 
       - name: Resolve version
         id: version
-        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
@@ -100,6 +83,23 @@ jobs:
           # nfpm.yaml + build-appimage.sh expect the binary at ./bin/clawdpanel.
           mkdir -p bin
           cp target/release/clawdpanel bin/clawdpanel
+
+      - name: Build macOS release binaries
+        if: matrix.os == 'macos-latest'
+        env:
+          CLAWDPANEL_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cargo build --release --target x86_64-apple-darwin -p clawdpanel-app
+          cargo build --release --target aarch64-apple-darwin -p clawdpanel-app
+          mkdir -p target/release
+          lipo -create -output target/release/clawdpanel target/x86_64-apple-darwin/release/clawdpanel target/aarch64-apple-darwin/release/clawdpanel
+
+      - name: Build Windows release binary
+        if: matrix.os == 'windows-latest'
+        env:
+          CLAWDPANEL_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cargo build --release -p clawdpanel-app
 
       - name: Install nfpm
         if: matrix.os == 'ubuntu-latest'
@@ -130,8 +130,51 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1
           OUT_DIR=$PWD/dist ./build/linux/build-appimage.sh
 
+      - name: macOS packaging
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.semver }}
+        run: |
+          mkdir -p bin/ClawdPanel.app/Contents/MacOS
+          mkdir -p bin/ClawdPanel.app/Contents/Resources
+          cp build/darwin/icons.icns bin/ClawdPanel.app/Contents/Resources/iconfile.icns
+          if [ -f darwin/Assets.car ]; then
+            cp darwin/Assets.car bin/ClawdPanel.app/Contents/Resources/
+          fi
+          cp target/release/clawdpanel bin/ClawdPanel.app/Contents/MacOS/ClawdPanel
+          cp build/darwin/Info.plist bin/ClawdPanel.app/Contents/Info.plist
+          # Replace version in Info.plist dynamically
+          sed -i.bak "s/<string>2.0.0<\/string>/<string>$VERSION<\/string>/g" bin/ClawdPanel.app/Contents/Info.plist
+          # Ad-hoc codesign the .app bundle (essential for modern macOS TCC accessibility grants to persist across restarts)
+          codesign --force --deep --sign - bin/ClawdPanel.app
+          mkdir -p dist
+          pkgbuild --identifier com.eyalm321.clawdpanel \
+                   --version "$VERSION" \
+                   --component bin/ClawdPanel.app \
+                   --install-location /Applications \
+                   --scripts build/darwin/scripts \
+                   dist/clawdpanel-macos.pkg
+
+      - name: Windows packaging
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.semver }}
+        run: |
+          mkdir -p bin
+          mkdir -p dist
+          makensis \
+            -DARG_WAILS_AMD64_BINARY=../../target/release/clawdpanel.exe \
+            -DINFO_PROJECTNAME="clawdpanel" \
+            -DINFO_COMPANYNAME="ClawdPanel" \
+            -DINFO_PRODUCTNAME="Clawd Panel" \
+            -DINFO_PRODUCTVERSION="$VERSION" \
+            -DINFO_COPYRIGHT="2026" \
+            build/windows/installer/project.nsi
+          cp bin/*-installer.exe dist/
+
       - name: Upload artifacts
-        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
