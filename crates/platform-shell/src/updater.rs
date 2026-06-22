@@ -313,12 +313,55 @@ pub fn select_update_asset(assets: &[ReleaseAsset]) -> String {
 
 #[cfg(target_os = "windows")]
 pub fn resolve_relaunch_path(current: &Path) -> PathBuf {
+    let current_str = current.to_string_lossy().to_lowercase();
+    let version = match option_env!("CLAWDPANEL_VERSION") {
+        Some(v) => v,
+        None => "dev",
+    };
+    let is_dev = version == "dev" || current_str.contains("claudebar");
+
+    if is_dev {
+        let mut candidates = Vec::new();
+        if let Some(pf) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(pf).join("ClawdPanel").join("clawdpanel.exe"));
+        }
+        if let Some(pf86) = std::env::var_os("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(pf86).join("ClawdPanel").join("clawdpanel.exe"));
+        }
+        if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(la).join("Programs").join("ClawdPanel").join("clawdpanel.exe"));
+        }
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
     current.to_path_buf()
 }
 
 #[cfg(target_os = "windows")]
-pub fn run_silent_installer(_installer_path: &Path, _app_path: &Path) -> Result<(), String> {
-    Err("self-update is not supported on this platform yet".into())
+pub fn run_silent_installer(installer_path: &Path, app_path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    let ps_command = format!(
+        r#"Start-Sleep -Seconds 1; Stop-Process -Name "ClawdPanel", "clawdpanel" -Force -ErrorAction SilentlyContinue; Start-Process -FilePath "{}" -ArgumentList "/S" -Verb RunAs -Wait; Start-Process -FilePath "{}"#,
+        installer_path.to_string_lossy(),
+        app_path.to_string_lossy()
+    );
+
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &ps_command]);
+
+    // 0x08000000 = CREATE_NO_WINDOW
+    cmd.creation_flags(0x08000000);
+
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("spawn updater: {e}"))
 }
 
 #[cfg(target_os = "macos")]
