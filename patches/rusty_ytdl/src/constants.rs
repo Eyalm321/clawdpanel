@@ -34,7 +34,7 @@ pub const VIDEO_ENCODING_RANKS: &[&str] = &[
 
 pub(crate) static DEFAULT_HEADERS: Lazy<HeaderMap> = Lazy::new(|| {
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.101 Safari/537.36".parse().unwrap());
+    headers.insert(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".parse().unwrap());
 
     headers
 });

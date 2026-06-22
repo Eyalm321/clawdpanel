@@ -130,6 +130,8 @@ export component SettingsWindow inherits Window {
     min-width: 520px;
     min-height: 260px;
 
+    callback drag-window();
+
     // `.modal` outer border.
     Rectangle {
         border-width: 1px;
@@ -145,6 +147,15 @@ export component SettingsWindow inherits Window {
                 y: parent.height - 1px;
                 height: 1px;
                 background: Theme.muted;
+            }
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.drag-window();
+                    }
+                }
             }
             HorizontalLayout {
                 padding-left: 8px;

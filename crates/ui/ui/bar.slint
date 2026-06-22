@@ -170,8 +170,10 @@ component RadioStatusIcon inherits Rectangle {
         height: 100%;
         viewbox-width: 24;
         viewbox-height: 24;
-        commands: "M6 5h4v14H6z M14 5h4v14h-4z";
-        fill: root.tint;
+        commands: "M8 5v14 M16 5v14";
+        fill: transparent;
+        stroke: root.tint;
+        stroke-width: 0.92px;
     }
 }
 
@@ -414,9 +416,12 @@ component UsageSeg inherits SegBox {
             }
         }
         // ── solid outlined bar (Fallout) ──
-        if root.has-limit && Theme.outlined-progress : OutlinedProgress {
-            pct: root.pct;
-            tint: root.tint;
+        if root.has-limit && Theme.outlined-progress : VerticalLayout {
+            alignment: center;
+            OutlinedProgress {
+                pct: root.pct;
+                tint: root.tint;
+            }
         }
         // Matrix blinking █ caret (step-end on/off via the blink flag).
         if root.show-caret && Theme.blink-caret : Glyph {

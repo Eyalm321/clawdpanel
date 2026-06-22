@@ -320,6 +320,7 @@ fn build_window(_ui: &Rc<UiState>, state: &Rc<MenuState>) -> Result<BrandMenuWin
                         } else if check.update_available {
                             m.set_hint(format!("v{} AVAILABLE", check.latest).into());
                             m.set_hint_kind("update".into());
+                            crate::updater::show_update_window(check.clone());
                         } else {
                             m.set_check_state("done".into());
                             m.set_hint("".into());

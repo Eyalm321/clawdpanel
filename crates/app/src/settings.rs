@@ -273,6 +273,19 @@ fn build_window(ui: &Rc<UiState>) -> Result<SettingsWindow, slint::PlatformError
 
     let weak = sw.as_weak();
 
+    // Drag window handler
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        let weak = weak.clone();
+        sw.on_drag_window(move || {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.window().with_winit_window(|win| {
+                    let _ = win.drag_window();
+                });
+            }
+        });
+    }
+
     // ── nav + close ──
     {
         let weak = weak.clone();

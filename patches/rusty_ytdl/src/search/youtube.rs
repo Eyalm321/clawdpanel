@@ -586,11 +586,16 @@ impl Playlist {
             initial_response_string
         };
 
+        eprintln!("[ytdl-debug] html is_empty={}", html.is_empty());
         if !html.is_empty() {
             let serde_value = serde_json::from_str::<serde_json::Value>(&html).unwrap();
-            let contents = &serde_value["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]
+            let mut contents = &serde_value["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]
                 ["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]
-                ["itemSectionRenderer"]["contents"][0]["playlistVideoListRenderer"]["contents"];
+                ["itemSectionRenderer"]["contents"];
+
+            if contents.is_array() && !contents[0]["playlistVideoListRenderer"].is_null() {
+                contents = &contents[0]["playlistVideoListRenderer"]["contents"];
+            }
 
             let playlist_primary_data = &serde_value["sidebar"]["playlistSidebarRenderer"]["items"]
                 [0]["playlistSidebarPrimaryInfoRenderer"];
@@ -1080,39 +1085,145 @@ impl Playlist {
                 break;
             }
 
-            let video = &info["playlistVideoRenderer"];
-            // video not proper type skip it!
-            if video.is_null() || video["shortBylineText"].is_null() {
-                continue;
-            }
+            if !info["playlistVideoRenderer"].is_null() {
+                let video = &info["playlistVideoRenderer"];
+                // video not proper type skip it!
+                if video["shortBylineText"].is_null() {
+                    continue;
+                }
 
-            videos.push(Video {
-                id: video["videoId"].as_str().unwrap_or("").to_string(),
-                url: if video["videoId"].is_string() {
-                    video["videoId"].as_str().unwrap_or("").to_string()
-                } else {
-                    String::from("")
-                },
-                title: video["title"]["runs"][0]["text"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-                description: "".to_string(),
-                duration: if !video["lengthText"]["simpleText"].is_null() {
-                    time_to_ms(video["lengthText"]["simpleText"].as_str().unwrap_or("0:00")) as u64
-                } else {
-                    0
-                },
-                duration_raw: if !video["lengthText"]["simpleText"].is_null() {
-                    video["lengthText"]["simpleText"]
+                videos.push(Video {
+                    id: video["videoId"].as_str().unwrap_or("").to_string(),
+                    url: if video["videoId"].is_string() {
+                        video["videoId"].as_str().unwrap_or("").to_string()
+                    } else {
+                        String::from("")
+                    },
+                    title: video["title"]["runs"][0]["text"]
                         .as_str()
                         .unwrap_or("")
-                        .to_string()
-                } else {
-                    "0:00".to_string()
-                },
-                thumbnails: if video["thumbnail"]["thumbnails"].is_array() {
-                    video["thumbnail"]["thumbnails"]
+                        .to_string(),
+                    description: "".to_string(),
+                    duration: if !video["lengthText"]["simpleText"].is_null() {
+                        time_to_ms(video["lengthText"]["simpleText"].as_str().unwrap_or("0:00")) as u64
+                    } else {
+                        0
+                    },
+                    duration_raw: if !video["lengthText"]["simpleText"].is_null() {
+                        video["lengthText"]["simpleText"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string()
+                    } else {
+                        "0:00".to_string()
+                    },
+                    thumbnails: if video["thumbnail"]["thumbnails"].is_array() {
+                        video["thumbnail"]["thumbnails"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|x| Thumbnail {
+                                width: x
+                                    .get("width")
+                                    .and_then(|x| {
+                                        if x.is_string() {
+                                            x.as_str().map(|x| x.parse::<i64>().unwrap_or_default())
+                                        } else {
+                                            x.as_i64()
+                                        }
+                                    })
+                                    .unwrap_or(0i64) as u64,
+                                height: x
+                                    .get("height")
+                                    .and_then(|x| {
+                                        if x.is_string() {
+                                            x.as_str().map(|x| x.parse::<i64>().unwrap_or_default())
+                                        } else {
+                                            x.as_i64()
+                                        }
+                                    })
+                                    .unwrap_or(0i64) as u64,
+                                url: x
+                                    .get("url")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                            .collect::<Vec<Thumbnail>>()
+                    } else {
+                        vec![]
+                    },
+                    channel: Channel {
+                        id: video["shortBylineText"]["runs"][0]["navigationEndpoint"]["browseEndpoint"]
+                            ["browseId"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string(),
+                        name: video["shortBylineText"]["runs"][0]["text"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string(),
+                        url: if video["shortBylineText"]["runs"][0]["navigationEndpoint"]
+                            ["browseEndpoint"]["canonicalBaseUrl"]
+                            .is_string()
+                        {
+                            format!(
+                                "https://www.youtube.com{}",
+                                video["shortBylineText"]["runs"][0]["navigationEndpoint"]
+                                    ["browseEndpoint"]["canonicalBaseUrl"]
+                                    .as_str()
+                                    .unwrap_or("")
+                            )
+                        } else if video["shortBylineText"]["runs"][0]["navigationEndpoint"]
+                            ["commandMetadata"]["webCommandMetadata"]["url"]
+                            .is_string()
+                        {
+                            format!(
+                                "https://www.youtube.com{}",
+                                video["shortBylineText"]["runs"][0]["navigationEndpoint"]
+                                    ["commandMetadata"]["webCommandMetadata"]["url"]
+                                    .as_str()
+                                    .unwrap_or("")
+                            )
+                        } else {
+                            String::from("")
+                        },
+                        icon: vec![],
+                        verified: false,
+                        subscribers: 0,
+                    },
+                    uploaded_at: None,
+                    views: 0,
+                });
+            } else if !info["lockupViewModel"].is_null() {
+                let lockup = &info["lockupViewModel"];
+                let video_id = lockup["contentId"].as_str().unwrap_or("").to_string();
+                if video_id.is_empty() {
+                    continue;
+                }
+
+                let title = lockup["metadata"]["lockupMetadataViewModel"]["title"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
+                let mut duration_raw = String::new();
+                if let Some(overlays) = lockup["contentImage"]["thumbnailViewModel"]["overlays"].as_array() {
+                    for overlay in overlays {
+                        let badge = &overlay["thumbnailBottomOverlayViewModel"]["badges"][0]["thumbnailBadgeViewModel"]["text"];
+                        if let Some(s) = badge.as_str() {
+                            duration_raw = s.to_string();
+                            break;
+                        }
+                    }
+                }
+                if duration_raw.is_empty() {
+                    duration_raw = "0:00".to_string();
+                }
+
+                let thumbnails_val = &lockup["contentImage"]["thumbnailViewModel"]["image"]["sources"];
+                let thumbnails = if thumbnails_val.is_array() {
+                    thumbnails_val
                         .as_array()
                         .unwrap()
                         .iter()
@@ -1146,49 +1257,57 @@ impl Playlist {
                         .collect::<Vec<Thumbnail>>()
                 } else {
                     vec![]
-                },
-                channel: Channel {
-                    id: video["shortBylineText"]["runs"][0]["navigationEndpoint"]["browseEndpoint"]
-                        ["browseId"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                    name: video["shortBylineText"]["runs"][0]["text"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                    url: if video["shortBylineText"]["runs"][0]["navigationEndpoint"]
-                        ["browseEndpoint"]["canonicalBaseUrl"]
-                        .is_string()
-                    {
-                        format!(
-                            "https://www.youtube.com{}",
-                            video["shortBylineText"]["runs"][0]["navigationEndpoint"]
-                                ["browseEndpoint"]["canonicalBaseUrl"]
-                                .as_str()
-                                .unwrap_or("")
-                        )
-                    } else if video["shortBylineText"]["runs"][0]["navigationEndpoint"]
-                        ["commandMetadata"]["webCommandMetadata"]["url"]
-                        .is_string()
-                    {
-                        format!(
-                            "https://www.youtube.com{}",
-                            video["shortBylineText"]["runs"][0]["navigationEndpoint"]
-                                ["commandMetadata"]["webCommandMetadata"]["url"]
-                                .as_str()
-                                .unwrap_or("")
-                        )
-                    } else {
-                        String::from("")
+                };
+
+                let channel_id = lockup["metadata"]["lockupMetadataViewModel"]["image"]["decoratedAvatarViewModel"]["rendererContext"]["commandContext"]["onTap"]["innertubeCommand"]["browseEndpoint"]["browseId"]
+                    .as_str()
+                    .or_else(|| {
+                        lockup["metadata"]["lockupMetadataViewModel"]["metadata"]["contentMetadataViewModel"]["metadataRows"][0]["metadataParts"][0]["text"]["commandRuns"][0]["onTap"]["innertubeCommand"]["browseEndpoint"]["browseId"].as_str()
+                    })
+                    .unwrap_or("")
+                    .to_string();
+
+                let channel_name = lockup["metadata"]["lockupMetadataViewModel"]["metadata"]["contentMetadataViewModel"]["metadataRows"][0]["metadataParts"][0]["text"]["content"]
+                    .as_str()
+                    .or_else(|| {
+                        lockup["metadata"]["lockupMetadataViewModel"]["image"]["decoratedAvatarViewModel"]["a11yLabel"]
+                            .as_str()
+                            .map(|s| s.strip_prefix("Go to channel ").unwrap_or(s))
+                    })
+                    .unwrap_or("")
+                    .to_string();
+
+                let canonical_url = lockup["metadata"]["lockupMetadataViewModel"]["image"]["decoratedAvatarViewModel"]["rendererContext"]["commandContext"]["onTap"]["innertubeCommand"]["browseEndpoint"]["canonicalBaseUrl"]
+                    .as_str()
+                    .or_else(|| {
+                        lockup["metadata"]["lockupMetadataViewModel"]["metadata"]["contentMetadataViewModel"]["metadataRows"][0]["metadataParts"][0]["text"]["commandRuns"][0]["onTap"]["innertubeCommand"]["browseEndpoint"]["canonicalBaseUrl"].as_str()
+                    });
+                let channel_url = if let Some(canonical) = canonical_url {
+                    format!("https://www.youtube.com{}", canonical)
+                } else {
+                    String::new()
+                };
+
+                videos.push(Video {
+                    id: video_id.clone(),
+                    url: video_id,
+                    title,
+                    description: "".to_string(),
+                    duration: time_to_ms(&duration_raw) as u64,
+                    duration_raw,
+                    thumbnails,
+                    channel: Channel {
+                        id: channel_id,
+                        name: channel_name,
+                        url: channel_url,
+                        icon: vec![],
+                        verified: false,
+                        subscribers: 0,
                     },
-                    icon: vec![],
-                    verified: false,
-                    subscribers: 0,
-                },
-                uploaded_at: None,
-                views: 0,
-            });
+                    uploaded_at: None,
+                    views: 0,
+                });
+            }
         }
 
         videos

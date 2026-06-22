@@ -998,4 +998,25 @@ mod tests {
             eprintln!("proxy status: {} (403 = known extraction gap)", resp.status());
         });
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_playlist_expand_live() {
+        let url = "https://www.youtube.com/playlist?list=PLLvWV__Bn2_PwR92FfrxjsZCAM7zyxzze";
+        let opts = PlaylistSearchOptions { fetch_all: true, ..Default::default() };
+        let res = Playlist::get(url, Some(&opts)).await;
+        match res {
+            Ok(playlist) => {
+                println!("Playlist ID: {}", playlist.id);
+                println!("Playlist Name: {}", playlist.name);
+                println!("Videos count: {}", playlist.videos.len());
+                for video in playlist.videos.iter().take(5) {
+                    println!("  Video: {} - {}", video.id, video.title);
+                }
+            }
+            Err(e) => {
+                panic!("Playlist::get failed: {:?}", e);
+            }
+        }
+    }
 }

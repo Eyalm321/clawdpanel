@@ -81,6 +81,17 @@ pub fn check_now() {
     });
 }
 
+/// Opens the update window with a pre-fetched update check result.
+pub fn show_update_window(res: UpdateCheckResult) {
+    UPDATE_STATE.with(|s| {
+        if let Some(st) = s.borrow().clone() {
+            *st.last.borrow_mut() = res.clone();
+            open_window(&st, res);
+        }
+    });
+}
+
+
 /// Opens (creating + wiring on first use) the update window, filling it from
 /// `res` and resetting the progress panel. Hidden — not destroyed — on close, so
 /// reopening is instant (the Wails "hide not close" behavior).
@@ -128,6 +139,19 @@ fn build_window(st: &Rc<UpdateState>) -> Result<UpdateWindow, slint::PlatformErr
     let w = UpdateWindow::new()?;
     let b = w.global::<UpdateBridge>();
     let weak = w.as_weak();
+
+    // Drag window handler
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        let weak = weak.clone();
+        w.on_drag_window(move || {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.window().with_winit_window(|win| {
+                    let _ = win.drag_window();
+                });
+            }
+        });
+    }
 
     // Later / ✕ → hide (state preserved).
     {

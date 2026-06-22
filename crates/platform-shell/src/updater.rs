@@ -188,7 +188,12 @@ fn command_succeeds(cmd: &str, args: &[&str]) -> bool {
 
 #[cfg(target_os = "linux")]
 pub fn select_update_asset(assets: &[ReleaseAsset]) -> String {
-    select_update_asset_for(&install_flavor(), assets)
+    let flavor = install_flavor();
+    if flavor.is_empty() {
+        select_update_asset_for("appimage", assets)
+    } else {
+        select_update_asset_for(&flavor, assets)
+    }
 }
 
 /// For an AppImage the running exe is the mounted squashfs payload; the
@@ -208,7 +213,9 @@ pub fn resolve_relaunch_path(current: &Path) -> PathBuf {
 /// `runSilentInstaller`.
 #[cfg(target_os = "linux")]
 pub fn run_silent_installer(installer_path: &Path, app_path: &Path) -> Result<(), String> {
-    match install_flavor().as_str() {
+    let flavor = install_flavor();
+    let flavor_str = if flavor.is_empty() { "appimage" } else { flavor.as_str() };
+    match flavor_str {
         "appimage" => update_app_image(installer_path, app_path),
         "rpm" => spawn_package_install("pkexec rpm -U --replacepkgs", installer_path, app_path),
         "deb" => spawn_package_install("pkexec dpkg -i", installer_path, app_path),
