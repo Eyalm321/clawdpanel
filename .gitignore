@@ -28,3 +28,11 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+# Rust (rewrite)
+/target
+# Release packaging staging (CI copies target/release/clawdpanel -> bin/,
+# nfpm/appimagetool emit into dist/).
+/bin/
+/dist/
+# Task runner cache (legacy Go/Wails build infra)
+**/.task/

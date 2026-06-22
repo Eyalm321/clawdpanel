@@ -1,0 +1,228 @@
+// ClawdPanel Update window — S9 (#56). The Slint port of the Wails
+// `update.html` + `frontend/src/update.js`: a frameless, themed popup with a
+// titlebar, a details panel (current/latest version grid + scrollable monospace
+// release-notes box + LATER / UPDATE-NOW buttons) and a progress panel (status
+// text + progress bar + downloaded/total readout).
+//
+// Data + state live on the `UpdateBridge` global, filled from Rust
+// (platform-shell's updater): the GitHub `releases/latest` check result and the
+// streamed-download progress (replaces the `update:progress` Wails event). The
+// palette comes from the shared `Theme` global so the popup tracks the bar.
+
+import { Theme } from "theme.slint";
+import { Glyph, Invader, EditorButton } from "atoms.slint";
+
+export global UpdateBridge {
+    // ── check result (Rust → UI) ──
+    in-out property <string> current: "—";
+    in-out property <string> latest: "—";
+    in-out property <string> changelog;
+    // Whether an in-place installer asset exists for this OS/flavor; when false
+    // the UPDATE-NOW button becomes "OPEN DOWNLOAD PAGE" (releases-page handoff).
+    in-out property <bool> has-download: false;
+
+    // ── download progress (Rust → UI) ──
+    in-out property <bool> show-progress: false;
+    in-out property <bool> failed: false;
+    in-out property <float> progress-pct: 0;          // 0..100
+    in-out property <string> progress-status: "Downloading Update...";
+    in-out property <string> progress-details: "0.00 / 0.00 MB";
+
+    // ── intents (UI → Rust) ──
+    callback update-now();
+    callback later();
+    callback close();
+}
+
+export component UpdateWindow inherits Window {
+    title: "System Update";
+    no-frame: true;
+    background: Theme.bg;
+    preferred-width: 520px;
+    preferred-height: 380px;
+    min-width: 400px;
+    min-height: 280px;
+
+    callback drag-window();
+
+    // `.modal` outer border.
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.muted;
+    }
+
+    VerticalLayout {
+        // ── Titlebar: invader + SYSTEM UPDATE + ✕ ──
+        Rectangle {
+            height: 28px;
+            background: rgba(255, 255, 255, 0.02);
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.muted;
+            }
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.drag-window();
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 6px;
+                spacing: 8px;
+                alignment: stretch;
+                VerticalLayout {
+                    alignment: center;
+                    Invader { width: 14px; height: 10px; }
+                }
+                Glyph {
+                    text: "SYSTEM UPDATE";
+                    color: Theme.text;
+                    letter-spacing: 1px;
+                    horizontal-stretch: 1;
+                }
+                close-btn := Rectangle {
+                    width: 22px;
+                    border-width: 1px;
+                    border-color: close-ta.has-hover ? Theme.clay : transparent;
+                    close-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { UpdateBridge.close(); }
+                    }
+                    Text {
+                        text: "✕";
+                        color: close-ta.has-hover ? Theme.clay : Theme.muted;
+                        font-family: "Cascadia Mono";
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
+        }
+
+        // ── Body ──
+        Rectangle {
+            background: Theme.bg;
+            vertical-stretch: 1;
+
+            // ─────────── DETAILS ───────────
+            if !UpdateBridge.show-progress : VerticalLayout {
+                padding: 16px;
+                spacing: 0;
+
+                // Current / latest version grid.
+                HorizontalLayout {
+                    spacing: 16px;
+                    Glyph { text: "CURRENT VERSION:"; color: Theme.muted; }
+                    Glyph { text: "v" + UpdateBridge.current; color: Theme.text; horizontal-stretch: 1; }
+                }
+                Rectangle { height: 6px; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    Glyph { text: "LATEST VERSION:"; color: Theme.muted; }
+                    Glyph { text: "v" + UpdateBridge.latest; color: Theme.green; horizontal-stretch: 1; }
+                }
+
+                Rectangle { height: 12px; }
+                Glyph { text: "RELEASE NOTES:"; color: Theme.muted; font-size: 10px; }
+                Rectangle { height: 4px; }
+
+                // Scrollable monospace release-notes box.
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-width: 1px;
+                    border-color: Theme.muted;
+                    background: rgba(0, 0, 0, 0.25);
+                    Flickable {
+                        x: 8px;
+                        y: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height - 16px;
+                        viewport-width: self.width;
+                        viewport-height: notes.preferred-height;
+                        notes := Text {
+                            width: parent.width;
+                            text: UpdateBridge.changelog == ""
+                                ? "No release notes provided."
+                                : UpdateBridge.changelog;
+                            color: Theme.text;
+                            font-family: "Cascadia Mono";
+                            font-size: 12px;
+                            font-weight: 400;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                Rectangle { height: 16px; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+                    EditorButton {
+                        label: "LATER";
+                        clicked => { UpdateBridge.later(); }
+                    }
+                    EditorButton {
+                        label: UpdateBridge.has-download ? "UPDATE NOW" : "OPEN DOWNLOAD PAGE";
+                        accent: true;
+                        clicked => { UpdateBridge.update-now(); }
+                    }
+                }
+            }
+
+            // ─────────── PROGRESS ───────────
+            if UpdateBridge.show-progress : VerticalLayout {
+                padding: 24px;
+                alignment: center;
+                spacing: 0;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Glyph {
+                        text: UpdateBridge.progress-status;
+                        font-size: 15px;
+                        color: UpdateBridge.failed ? Theme.red : Theme.text;
+                    }
+                }
+                Rectangle { height: 16px; }
+
+                // Bar: outer border, fill = pct, centered percent overlay.
+                Rectangle {
+                    height: 26px;
+                    border-width: 1px;
+                    border-color: Theme.muted;
+                    background: rgba(0, 0, 0, 0.3);
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(UpdateBridge.progress-pct / 100, 0.0, 1.0);
+                        height: 100%;
+                        background: Theme.green;
+                    }
+                    Glyph {
+                        text: round(UpdateBridge.progress-pct) + "%";
+                        color: Theme.text;
+                        horizontal-alignment: center;
+                        width: 100%;
+                    }
+                }
+                Rectangle { height: 10px; }
+                HorizontalLayout {
+                    alignment: center;
+                    Glyph {
+                        text: UpdateBridge.progress-details;
+                        font-size: 11px;
+                        font-weight: 400;
+                        color: Theme.muted;
+                    }
+                }
+            }
+        }
+    }
+}

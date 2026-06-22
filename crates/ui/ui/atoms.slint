@@ -1,0 +1,377 @@
+// Shared bar atoms — the small reusable pieces every segment is built from.
+// All colors come from the `Theme` global (see theme.slint); these components
+// never hardcode a palette value. Mirrors the `.seg` / `.sep` / `.arrow` /
+// `.invader` / `.pin-icon` / radio-chip / scanline rules in style.css.
+
+import { Theme, ThemeId } from "theme.slint";
+
+// `.seg { display:flex; align-items:center; gap:5px; padding:0 5px; height:100% }`
+// `@children` flow into the inner row so callers just drop content in.
+export component SegBox inherits Rectangle {
+    height: 100%;
+    width: layout.preferred-width;
+    layout := HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
+        spacing: 5px;
+        alignment: start;
+        @children
+    }
+}
+
+// Bold Cascadia Mono text — the base for every label/value glyph.
+export component Glyph inherits Text {
+    font-family: "Cascadia Mono";
+    font-size: 11px;
+    font-weight: 700;
+    vertical-alignment: center;
+    // letter-spacing 0.02em on an 11px bar ≈ 0.22px
+    letter-spacing: 0.22px;
+}
+
+// `.sep` "·": muted, 8px, normal weight, opacity .4, 5px padding each side.
+export component Sep inherits Rectangle {
+    height: 100%;
+    width: layout.preferred-width;
+    layout := HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
+        alignment: center;
+        Text {
+            text: "·";
+            color: Theme.muted;
+            opacity: 0.4;
+            font-family: "Cascadia Mono";
+            font-size: 8px;
+            font-weight: 400;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// `.arrow`: muted clickable glyph that takes the theme accent on hover. Disabled
+// arrows dim to .3 and ignore clicks (matches `.arrow.is-disabled`).
+export component Arrow inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    in property <length> size: 9px;
+    callback clicked;
+    height: 100%;
+    min-width: t.preferred-width + 4px;
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    t := Glyph {
+        x: (parent.width - self.width) / 2;
+        text: root.glyph;
+        font-size: root.size;
+        opacity: root.enabled ? 1.0 : 0.3;
+        color: (ta.has-hover && root.enabled) ? Theme.arrow-hover : Theme.muted;
+        font-weight: 400;
+    }
+}
+
+// The Space-Invader brand glyph. Slint has no blur filter, so the CSS
+// `drop-shadow(...)` phosphor glow is approximated with a larger, lower-opacity
+// duplicate Path drawn behind the crisp one (ui-slint.md mitigation #1).
+export component Invader inherits Rectangle {
+    in property <bool> hover: false;
+    width: 15px;
+    height: 11px;
+
+    property <length> w: self.width / 11;
+    property <length> h: self.height / 8;
+
+    // Glow:
+    if Theme.invader-glow || root.hover : Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        property <length> gw: self.width / 11;
+        property <length> gh: self.height / 8;
+        property <color> glow-color: root.hover ? Theme.clay.with-alpha(0.5) : Theme.invader-fill.with-alpha(0.45);
+        
+        // Row 0
+        Rectangle { x: 2 * gw; y: 0 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 8 * gw; y: 0 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 1
+        Rectangle { x: 3 * gw; y: 1 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 7 * gw; y: 1 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 2
+        Rectangle { x: 2 * gw; y: 2 * gh; width: 7 * gw; height: gh; background: glow-color; }
+        // Row 3
+        Rectangle { x: 1 * gw; y: 3 * gh; width: 2 * gw; height: gh; background: glow-color; }
+        Rectangle { x: 4 * gw; y: 3 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 6 * gw; y: 3 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 8 * gw; y: 3 * gh; width: 2 * gw; height: gh; background: glow-color; }
+        // Row 4
+        Rectangle { x: 0 * gw; y: 4 * gh; width: 11 * gw; height: gh; background: glow-color; }
+        // Row 5
+        Rectangle { x: 0 * gw; y: 5 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 2 * gw; y: 5 * gh; width: 7 * gw; height: gh; background: glow-color; }
+        Rectangle { x: 10 * gw; y: 5 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 6
+        Rectangle { x: 0 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 2 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 8 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        Rectangle { x: 10 * gw; y: 6 * gh; width: gw; height: gh; background: glow-color; }
+        // Row 7
+        Rectangle { x: 3 * gw; y: 7 * gh; width: 2 * gw; height: gh; background: glow-color; }
+        Rectangle { x: 6 * gw; y: 7 * gh; width: 2 * gw; height: gh; background: glow-color; }
+    }
+
+    // Main Invader:
+    // Row 0
+    Rectangle { x: 2 * w; y: 0 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 8 * w; y: 0 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 1
+    Rectangle { x: 3 * w; y: 1 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 7 * w; y: 1 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 2
+    Rectangle { x: 2 * w; y: 2 * h; width: 7 * w; height: h; background: Theme.invader-fill; }
+    // Row 3
+    Rectangle { x: 1 * w; y: 3 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 4 * w; y: 3 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 6 * w; y: 3 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 8 * w; y: 3 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+    // Row 4
+    Rectangle { x: 0 * w; y: 4 * h; width: 11 * w; height: h; background: Theme.invader-fill; }
+    // Row 5
+    Rectangle { x: 0 * w; y: 5 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 2 * w; y: 5 * h; width: 7 * w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 10 * w; y: 5 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 6
+    Rectangle { x: 0 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 2 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 8 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 10 * w; y: 6 * h; width: w; height: h; background: Theme.invader-fill; }
+    // Row 7
+    Rectangle { x: 3 * w; y: 7 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+    Rectangle { x: 6 * w; y: 7 * h; width: 2 * w; height: h; background: Theme.invader-fill; }
+}
+
+// `.pin-icon`: gray when unpinned, clay (theme accent) when pinned. CSS also
+// tilts the glyph 45° when pinned.
+export component PinIcon inherits Rectangle {
+    in property <bool> pinned: true;
+    width: 12px;
+    height: 12px;
+    transform-rotation: root.pinned ? 45deg : 0deg;
+    animate transform-rotation { duration: 120ms; }
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z";
+        fill: root.pinned ? Theme.clay : Theme.muted;
+    }
+}
+
+// Ghost-chip transport key for the radio cluster: faint translucent fill +
+// hairline border + 4px radius, brightening on hover (style.css:397-413).
+export component GhostChip inherits Rectangle {
+    in property <bool> disabled: false;
+    callback clicked;
+    height: 16px;
+    width: max(16px, layout.preferred-width);
+    border-radius: 4px;
+    background: ta.has-hover && !root.disabled
+        ? rgba(255, 255, 255, 0.11)
+        : root.disabled ? rgba(255, 255, 255, 0.02) : rgba(255, 255, 255, 0.05);
+    border-width: 1px;
+    border-color: ta.has-hover && !root.disabled
+        ? rgba(255, 255, 255, 0.13)
+        : root.disabled ? rgba(255, 255, 255, 0.04) : rgba(255, 255, 255, 0.07);
+    ta := TouchArea {
+        mouse-cursor: root.disabled ? MouseCursor.default : MouseCursor.pointer;
+        clicked => { if (!root.disabled) { root.clicked(); } }
+    }
+    VerticalLayout {
+        alignment: center;
+        layout := HorizontalLayout {
+            padding-left: 3px;
+            padding-right: 3px;
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// CRT scanline overlay (style.css:361-374), gated on Theme.crt by the caller.
+// The CSS layer is a tiled 3px horizontal-scanline gradient PLUS a faint RGB
+// sub-pixel mask, both at opacity .8. Slint gradients can't tile, so the
+// horizontal scanlines are drawn as a row of 1px dark lines every 3px
+// (ui-slint.md mitigation #2). The RGB sub-pixel column mask (alpha .01-.04) is
+// the one piece left out — see commit notes.
+export component Scanlines inherits Rectangle {
+    // ~one 1px dark line per 3px band; 11 covers the 28px (and a bit taller) bar.
+    for i in 11 : Rectangle {
+        x: 0;
+        y: i * 3px;
+        width: 100%;
+        height: 1px;
+        // 0.15 line alpha × 0.8 layer opacity ≈ 0.12.
+        background: rgba(0, 0, 0, 0.12);
+    }
+}
+
+// ── Settings-window controls (style.css `.editor-*` / `.panel-check`, bumped to
+//    26px for the roomier popup). All themed off the Theme global. ──
+
+// `.editor-input`: bordered single-line field, clay border on focus, with a
+// muted placeholder shown while empty. `text` is two-way so callers can bind it
+// to a Settings global property; `edited`/`accepted` mirror TextInput.
+export component EditorInput inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text <=> ti.text;
+    callback edited(string);
+    callback accepted(string);
+    height: 26px;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: ti.has-focus ? Theme.clay : Theme.muted;
+    forward-focus: ti;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        if root.text == "" : Text {
+            text: root.placeholder;
+            color: Theme.muted;
+            font-family: "Cascadia Mono";
+            font-size: 12px;
+            font-weight: 400;
+            vertical-alignment: center;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        ti := TextInput {
+            color: Theme.text;
+            font-family: "Cascadia Mono";
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+            single-line: true;
+            edited => { root.edited(self.text); }
+            accepted => { root.accepted(self.text); }
+        }
+    }
+}
+
+// `.editor-btn` (+ `--accent`): ghost button that fills on hover; the accent
+// variant carries the clay outline and inverts to clay-on-bg on hover.
+export component EditorButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> accent: false;
+    callback clicked;
+    height: 26px;
+    min-width: lbl.preferred-width + 24px;
+    border-width: 1px;
+    border-color: root.accent
+        ? Theme.clay
+        : (ta.has-hover ? Theme.text : Theme.muted);
+    background: ta.has-hover
+        ? (root.accent ? Theme.clay : rgba(255, 255, 255, 0.05))
+        : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    lbl := Glyph {
+        x: (parent.width - self.width) / 2;
+        text: root.label;
+        font-size: 11px;
+        color: root.accent
+            ? (ta.has-hover ? Theme.bg : Theme.clay)
+            : (ta.has-hover ? Theme.text : Theme.muted);
+    }
+}
+
+// `.panel-check`: clay-filled box with a ✓ when checked (accent-color clay).
+export component Check inherits Rectangle {
+    in property <bool> checked;
+    callback toggled(bool);
+    width: 16px;
+    height: 16px;
+    border-width: 1px;
+    border-radius: 2px;
+    border-color: root.checked ? Theme.clay : Theme.muted;
+    background: root.checked ? Theme.clay : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+    if root.checked : Text {
+        text: "✓";
+        color: Theme.bg;
+        font-family: "Cascadia Mono";
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+// `.editor-btn` sized as the small ✕ URL-row remove key.
+export component SmallButton inherits Rectangle {
+    in property <string> label: "✕";
+    callback clicked;
+    width: 26px;
+    height: 26px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.clay : Theme.muted;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: ta.has-hover ? Theme.clay : Theme.muted;
+        font-family: "Cascadia Mono";
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+// Fallout's solid outlined Pip-Boy bar (style.css:204-229). 90×8 box with only
+// the right + bottom edges drawn (2px), and a fill that stands 1px proud of the
+// top. Slint borders are uniform, so the two visible edges are child rects.
+export component OutlinedProgress inherits Rectangle {
+    in property <float> pct;            // 0.0..=1.0
+    in property <color> tint: Theme.clay;
+    width: 90px;
+    height: 8px;
+    // bottom edge
+    Rectangle {
+        x: 0;
+        y: parent.height - 2px;
+        width: 100%;
+        height: 2px;
+        background: root.tint;
+    }
+    // right edge
+    Rectangle {
+        x: parent.width - 2px;
+        y: 0;
+        width: 2px;
+        height: 100%;
+        background: root.tint;
+    }
+    // fill: flush bottom-left, 9px tall so it pops 1px above the 8px box.
+    Rectangle {
+        x: 0;
+        y: parent.height - 9px;
+        width: parent.width * clamp(root.pct, 0.0, 1.0);
+        height: 9px;
+        background: root.tint;
+    }
+}

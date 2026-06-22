@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/types",
+    "crates/claude-core",
+    "crates/media",
+    "crates/platform-shell",
+    "crates/ui",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+
+[workspace.dependencies]
+clawdpanel-types = { path = "crates/types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[patch.crates-io]
+rusty_ytdl = { path = "patches/rusty_ytdl" }

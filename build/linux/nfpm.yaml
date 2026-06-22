@@ -3,8 +3,8 @@
 #   nfpm package -f build/linux/nfpm.yaml -p deb -t ./dist
 #   nfpm package -f build/linux/nfpm.yaml -p rpm -t ./dist
 #
-# Assumes the Linux binary has already been produced at build/bin/clawdpanel
-# by `wails build -platform linux/amd64`.
+# Assumes the release binary has already been produced at ./bin/clawdpanel
+# (CI copies `target/release/clawdpanel` there after `cargo build --release`).
 
 name: clawdpanel
 arch: amd64
@@ -22,16 +22,25 @@ license: MIT
 
 # Dependency names differ per distro family, so they live under
 # overrides (nfpm applies the matching set per output format).
-# The wails3 build links GTK4 + WebKitGTK 6.0 — not the GTK3 /
-# webkit2gtk-4.x stack of the old wails v2 builds.
+#
+# Rust/Slint stack (rework S12): the binary is a native Slint + winit (X11)
+# app, NOT a WebView. The GTK4 / WebKitGTK 6.0 deps are gone, and so are the
+# wmctrl/xprop/xdotool subprocess tools — x11rb talks the X protocol directly
+# now. Runtime deps are the Slint winit/femtovg stack: libxkbcommon (+ its X11
+# variant), fontconfig, Mesa libGL, and the core Xlib libs winit dlopens
+# (libX11/Xcursor/Xi/Xrandr). GStreamer stays for the media slice; python3 for
+# the postinstall statusline hook.
 overrides:
   deb:
     depends:
-      - libwebkitgtk-6.0-4
-      - libgtk-4-1
-      - wmctrl
-      - x11-utils    # provides xprop
-      - xdotool
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libfontconfig1
+      - libgl1
+      - libx11-6
+      - libxcursor1
+      - libxi6
+      - libxrandr2
       - python3
       - gstreamer1.0-plugins-base
       - gstreamer1.0-plugins-good
@@ -40,17 +49,14 @@ overrides:
       - nodejs       # required for the statusline command to run
   rpm:
     depends:
-      - webkitgtk6.0
-      - gtk4
-      - wmctrl
-      # Rich/boolean dep: the package that ships /usr/bin/xprop was renamed.
-      # Fedora 40+ / RHEL 10+ call it `xprop`; older EL shipped `xorg-x11-utils`
-      # (which no longer exists on Fedora — the stale name made the whole dnf5
-      # transaction unresolvable with "Id is out of bitmap range"). libsolv
-      # treats a paren-prefixed Requires with no version flag as a rich dep, so
-      # dnf installs whichever name exists on the target distro.
-      - "(xprop or xorg-x11-utils)"
-      - xdotool
+      - libxkbcommon
+      - libxkbcommon-x11
+      - fontconfig
+      - mesa-libGL
+      - libX11
+      - libXcursor
+      - libXi
+      - libXrandr
       - python3
       - gstreamer1-plugins-base
       - gstreamer1-plugins-good

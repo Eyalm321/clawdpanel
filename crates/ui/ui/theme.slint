@@ -1,0 +1,101 @@
+// Theme global — the Slint port of the five `.theme-*` CSS classes in
+// `frontend/src/style.css`. Rust sets `Theme.index` (0..=4); everything else is
+// derived in pure Slint markup so the whole palette switch happens here, exactly
+// the way the CSS `.theme-*` class swap drove it. Every component reads
+// `Theme.*` — no hardcoded palette colors live outside this file.
+
+export enum ThemeId { claude, fallout, amber, matrix, dracula }
+
+export global Theme {
+    // The persisted selection (mirrors localStorage['clawdpanel-theme']). Rust
+    // holds the source of truth and pushes the index in; `cycle()` lets the bar's
+    // ◀/▶ arrows step it locally for an instant repaint.
+    in-out property <int> index: 0;
+
+    out property <ThemeId> id:
+        index == 1 ? ThemeId.fallout :
+        index == 2 ? ThemeId.amber :
+        index == 3 ? ThemeId.matrix :
+        index == 4 ? ThemeId.dracula :
+                     ThemeId.claude;
+
+    // ── Palette (the 6 CSS vars per theme) ──
+    out property <color> bg:
+        id == ThemeId.fallout ? #041204 :
+        id == ThemeId.amber ? #0f0700 :
+        id == ThemeId.matrix ? #000000 :
+        id == ThemeId.dracula ? #282a36 :
+                                #0b0c0e;
+    out property <color> text:
+        id == ThemeId.fallout ? #33ff33 :
+        id == ThemeId.amber ? #ffb000 :
+        id == ThemeId.matrix ? #00ff00 :
+        id == ThemeId.dracula ? #f8f8f2 :
+                                #f3f4f6;
+    out property <color> muted:
+        id == ThemeId.fallout ? #145c14 :
+        id == ThemeId.amber ? #754400 :
+        id == ThemeId.matrix ? #004400 :
+        id == ThemeId.dracula ? #6272a4 :
+                                #6b7280;
+    out property <color> clay:
+        id == ThemeId.fallout ? #33ff33 :
+        id == ThemeId.amber ? #ffb000 :
+        id == ThemeId.matrix ? #00ff00 :
+        id == ThemeId.dracula ? #ff79c6 :
+                                #d77757;
+    out property <color> green:
+        id == ThemeId.fallout ? #33ff33 :
+        id == ThemeId.amber ? #ffb000 :
+        id == ThemeId.matrix ? #00ff00 :
+        id == ThemeId.dracula ? #50fa7b :
+                                #34d399;
+    out property <color> red:
+        id == ThemeId.fallout ? #ff3333 :
+        id == ThemeId.amber ? #ff3300 :
+        id == ThemeId.matrix ? #ff0000 :
+        id == ThemeId.dracula ? #ff5555 :
+                                #f23959;
+
+    // ── Per-theme extras (lbl/sub/prog-empty/invader/arrow/status overrides) ──
+    out property <color> lbl:
+        id == ThemeId.fallout ? #2db32d :
+        id == ThemeId.amber ? #b37b00 :
+        id == ThemeId.matrix ? #00b300 :
+        id == ThemeId.dracula ? #8be9fd :
+                                #c9cdd3;
+    out property <color> sub:
+        id == ThemeId.fallout ? #88ff88 :
+        id == ThemeId.amber ? #ffd077 :
+        id == ThemeId.matrix ? #88ff88 :
+        id == ThemeId.dracula ? #bd93f9 :
+                                #b1b9f9;
+    out property <color> prog-empty:
+        id == ThemeId.fallout ? rgba(51, 255, 51, 0.2) :
+        id == ThemeId.amber ? rgba(255, 176, 0, 0.2) :
+        id == ThemeId.matrix ? rgba(0, 255, 0, 0.25) :
+                               rgba(107, 114, 128, 0.45); // claude + dracula
+
+    // Status busy/idle read-out: lavender on claude+dracula, phosphor text on CRT.
+    out property <color> status-active:
+        crt ? text : #b1b9f9;
+    // Brand glyph fill: accent clay on claude/dracula, phosphor text on the CRTs.
+    out property <color> invader-fill:
+        crt ? text : clay;
+    // Steady phosphor bloom on the brand glyph (Pip-Boy / VT100).
+    out property <bool> invader-glow:
+        id == ThemeId.fallout || id == ThemeId.amber;
+    // Arrow hover accent: cyan on dracula, phosphor text on the CRTs, else clay.
+    out property <color> arrow-hover:
+        id == ThemeId.dracula ? #8be9fd :
+        crt ? text :
+              clay;
+
+    // Effect gates.
+    out property <bool> crt:
+        id == ThemeId.fallout || id == ThemeId.amber || id == ThemeId.matrix;
+    // Fallout swaps the ░▒▓█ text meter for the solid outlined Pip-Boy bar.
+    out property <bool> outlined-progress: id == ThemeId.fallout;
+    // Matrix shows a blinking █ text caret on the weekly value.
+    out property <bool> blink-caret: id == ThemeId.matrix;
+}

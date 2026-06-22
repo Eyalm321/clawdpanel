@@ -1,0 +1,6 @@
+{
+  "model_id": "claude-opus-4-8",
+  "captured_at": 1780228800,
+  "five_hour": { "used_percentage": 35.0, "resets_at": 1780237800 },
+  "seven_day": { "used_percentage": 37.0, "resets_at": 1780502400 }
+}

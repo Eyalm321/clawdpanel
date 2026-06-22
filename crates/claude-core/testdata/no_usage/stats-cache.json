@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "lastComputedDate": "2026-05-10",
+  "dailyActivity": [
+    { "date": "2026-05-10", "messageCount": 80, "sessionCount": 3, "toolCallCount": 25 }
+  ],
+  "dailyModelTokens": [
+    { "date": "2026-05-10", "tokensByModel": { "claude-sonnet-4-6": 5000000, "claude-opus-4-7": 1000000 } }
+  ],
+  "modelUsage": {
+    "claude-sonnet-4-6": { "inputTokens": 50000, "outputTokens": 25000, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0 }
+  },
+  "totalSessions": 3,
+  "totalMessages": 80,
+  "hourCounts": { "10": 3 }
+}
