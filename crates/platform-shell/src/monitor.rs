@@ -141,6 +141,7 @@ fn pick_dock_edge(mon: &MonitorInfo, all: &[MonitorInfo]) -> String {
 /// The root screen size as the bounding box of the given monitor layout.
 /// (`xdotool getdisplaygeometry` is unreliable under XWayland — it can report a
 /// single monitor's logical size instead of the root extent.)
+#[allow(dead_code)]
 pub(crate) fn root_geometry(all: &[MonitorInfo]) -> (i32, i32) {
     let mut w = 0;
     let mut h = 0;
