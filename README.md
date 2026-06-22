@@ -6,8 +6,8 @@
 Monitor token usage, switch accounts, dock across monitors, and stream Lo-Fi radio — all from a native cross-platform utility bar.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go 1.25" />
-  <img src="https://img.shields.io/badge/Wails-v2-DF0067" alt="Wails v2" />
+  <img src="https://img.shields.io/badge/Rust-%3E%3D1.75-orange?logo=rust&logoColor=white" alt="Rust >=1.75" />
+  <img src="https://img.shields.io/badge/Slint-v1-blue" alt="Slint v1" />
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-success" alt="Windows | macOS | Linux" />
   <img src="https://img.shields.io/badge/RAM-~6MB-orange" alt="~6MB RAM" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" />
@@ -65,7 +65,7 @@ Download from the [Releases](../../releases/latest) page:
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows 10/11 x64 | `ClawdPanel-*-windows-amd64-setup.exe` | NSIS installer. Requires [WebView2 Runtime](https://go.microsoft.com/fwlink/p/?LinkId=2124703) (pre-installed on Win11). |
+| Windows 10/11 x64 | `ClawdPanel-*-windows-amd64-setup.exe` | NSIS installer. Native executable (no WebView2 or Go runtime required). |
 | macOS 10.13+ (Intel + Apple Silicon) | `ClawdPanel-*-macos-universal.pkg` | Double-click to install to `/Applications`. |
 | Debian / Ubuntu | `clawdpanel_*_amd64.deb` | `sudo apt install ./clawdpanel_*_amd64.deb` |
 | Fedora / RHEL | `clawdpanel-*.x86_64.rpm` | `sudo dnf install ./clawdpanel-*.x86_64.rpm` |
@@ -74,7 +74,7 @@ Download from the [Releases](../../releases/latest) page:
 Installers wire up Claude Code's `statuslineCommand` automatically and clean it up on uninstall — no terminal commands needed. AppImage users get a one-time first-run prompt instead.
 
 <details>
-<summary><strong>First-launch security warnings (unsigned v1)</strong></summary>
+<summary><strong>First-launch security warnings (unsigned v2)</strong></summary>
 
 - **Windows** → SmartScreen "Windows protected your PC" → *More info* → *Run anyway*
 - **macOS** → "ClawdPanel cannot be opened…" → System Settings → Privacy & Security → *Open Anyway*, or right-click the .app → *Open*
@@ -86,13 +86,35 @@ Installers wire up Claude Code's `statuslineCommand` automatically and clean it 
 <details>
 <summary><strong>Build from source</strong></summary>
 
-Requires Go 1.25+, Node.js 18+, Wails v2 CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`). On Linux also: `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `pkg-config`.
+Requires Rust 1.75+ (using Cargo).
+
+#### Linux Prerequisites
+
+Install the required development and library packages:
 
 ```bash
-wails dev                                         # hot-reload dev mode
-wails build -platform windows/amd64 -nsis         # Windows installer
-wails build -platform darwin/universal            # macOS .app (then build/darwin/scripts for .pkg)
-wails build -platform linux/amd64 -tags webkit2_41  # Linux binary (then nfpm/AppImage via build/linux/*)
+sudo apt-get update
+sudo apt-get install -y \
+  pkg-config \
+  libxkbcommon-dev libxkbcommon-x11-dev \
+  libfontconfig1-dev libgl1-mesa-dev \
+  libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  libgtk-3-dev libayatana-appindicator3-dev
+```
+
+#### Build / Run Commands
+
+```bash
+# Run locally in development mode
+cargo run -p clawdpanel-app
+
+# Build the release binary
+cargo build --release -p clawdpanel-app
+
+# Run the release binary
+./target/release/clawdpanel
 ```
 
 </details>
@@ -144,7 +166,7 @@ A pin icon to the right of THEME toggles:
 <details>
 <summary>Implementation notes</summary>
 
-Go-side cursor polling at 80 ms — WebView2's `mouseleave` is unreliable on a 28 px window. A 200 ms grace period prevents accidental dismissal on cursor overshoot. The slide animates the OS window's Y position at ~60 fps (ease-out cubic) with a `SetWindowRgn` clip that masks any portion that would spill onto a monitor sitting above. (Windows only at v1; on macOS / Linux the toggle still affects docked-vs-floating state but the slide is a no-op.)
+Rust-side cursor polling at 100 ms — Slint/winit's `mouseleave` events are bypassed since polling the OS cursor is more reliable on a 28 px window. A 200 ms grace period prevents accidental dismissal on cursor overshoot. The slide animates the OS window's Y position at ~60 fps (ease-out cubic) with a clipping mask that hides any portion that would spill onto a monitor sitting above. (Windows and Linux X11 only; on macOS and Linux Wayland the toggle still affects docked-vs-floating state but the slide is a no-op.)
 
 </details>
 
@@ -179,13 +201,13 @@ Anthropic  GET /api/oauth/usage        Claude Code (CLI)
        └──────────────┬────────────────────────┘
                       │  poll (refreshSeconds), live source preferred
                       ▼
-            ClawdPanel backend (Go)
+             ClawdPanel backend (Rust)
                       │
-                      │  Wails IPC (JSON bindings)
+                      │  Slint Properties & Callbacks (native compile)
                       ▼
-            WebView frontend (HTML/CSS/JS)
+             Slint UI (app.slint)
                       │
-                      └── OS integrations: AppBar / NSWindow / X11 dock,
+                      └── OS integrations (platform-shell): AppBar / NSWindow / X11 dock,
                                            system tray, autostart, monitors
 ```
 
@@ -250,32 +272,26 @@ Every Claude prompt then writes a tiny JSON payload to `rate_limits.json`, which
 
 ```
 clawdpanel/
-├── main.go                          # Wails bootstrap + embed directives
-├── app.go                           # App struct + Wails-exported bindings
-├── icon_{windows,darwin,linux}.go   # Per-OS tray icon embedding
-├── internal/
-│   ├── config/
-│   │   ├── config.go                # Config struct, Load/Save, cross-platform AppDataDir
-│   │   └── startup_{windows,darwin,linux}.go  # autostart (registry / LaunchAgent / .desktop)
-│   ├── claude/                      # Read Claude JSON files, compute BarData
-│   ├── platform/                    # Per-OS window + monitor APIs
-│   │   ├── window_{windows,darwin,linux}.go
-│   │   └── monitor_{windows,darwin,linux}.go
-│   └── tray/                        # System tray via fyne.io/systray
-├── frontend/                        # Wails webview UI
-└── build/
-    ├── windows/installer/           # NSIS template + statusline PowerShell script
-    ├── darwin/scripts/              # pkgbuild postinstall/preuninstall bash scripts
-    └── linux/                       # nfpm.yaml, .desktop, AppDir, AppRun, postinstall.sh
+├── Cargo.toml                       # Root Cargo workspace manifest
+├── Cargo.lock
+├── patches/
+│   └── rusty_ytdl/                  # Patched YouTube client to handle playlist structures
+└── crates/
+    ├── app/                         # Coordination, main entry point, settings, radio, updater, menu integration
+    ├── claude-core/                 # Watched ~/.claude files, token calculations, and local cache
+    ├── media/                       # Headless Claude FM YouTube extraction, DASH streaming, local caching proxy, and playback backend (GStreamer on Linux, stub elsewhere)
+    ├── platform-shell/              # OS window creation, auto-updater download/relaunch, system tray, and monitor reservation
+    ├── types/                       # Shared configuration models and types
+    └── ui/                          # Slint user interface compile definitions and fonts (e.g. app.slint, bar.slint)
 ```
 
 ---
 
-## ⚠️ Known limitations (v1 cross-platform)
+## ⚠️ Known limitations (v2 cross-platform)
 
 - **Linux Wayland**: no portable protocol for "stay above other windows" or "reserve screen space". KWin honors `_NET_WM_WINDOW_TYPE_DOCK`; GNOME/Mutter mostly ignores it; wlroots compositors (Hyprland, Sway) vary. X11 sessions work correctly.
 - **macOS docking**: NSWindow at `NSStatusWindowLevel` floats above other windows but can't reserve screen space the way Windows AppBar does — accepted as macOS-native behavior.
-- **macOS Gatekeeper** (unsigned v1): see *First-launch security warnings* in Quick Start.
+- **macOS Gatekeeper** (unsigned v2): see *First-launch security warnings* in Quick Start.
 - **Settings merge safety**: if `~/.claude/settings.json` already exists but contains invalid JSON, the installer logs a warning and skips the modification rather than overwriting it.
 
 ---

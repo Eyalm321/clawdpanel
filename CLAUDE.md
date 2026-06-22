@@ -1,6 +1,6 @@
 # ClawdPanel
 
-A retro-styled desktop HUD for Claude Code (Wails v3, Go backend + WebView frontend).
+A retro-styled desktop HUD for Claude Code (Rust backend + Slint UI).
 
 ## Agent skills
 
