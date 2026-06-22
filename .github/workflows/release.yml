@@ -139,8 +139,8 @@ jobs:
           mkdir -p bin/ClawdPanel.app/Contents/MacOS
           mkdir -p bin/ClawdPanel.app/Contents/Resources
           cp build/darwin/icons.icns bin/ClawdPanel.app/Contents/Resources/iconfile.icns
-          if [ -f darwin/Assets.car ]; then
-            cp darwin/Assets.car bin/ClawdPanel.app/Contents/Resources/
+          if [ -f build/darwin/Assets.car ]; then
+            cp build/darwin/Assets.car bin/ClawdPanel.app/Contents/Resources/
           fi
           cp target/release/clawdpanel bin/ClawdPanel.app/Contents/MacOS/ClawdPanel
           cp build/darwin/Info.plist bin/ClawdPanel.app/Contents/Info.plist
