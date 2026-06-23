@@ -169,7 +169,7 @@ jobs:
           mkdir -p bin
           mkdir -p dist
           "/c/Program Files (x86)/NSIS/makensis.exe" \
-            -DARG_WAILS_AMD64_BINARY=../../target/release/clawdpanel.exe \
+            -DARG_WAILS_AMD64_BINARY="..\\..\\..\\target\\release\\clawdpanel.exe" \
             -DINFO_PROJECTNAME="clawdpanel" \
             -DINFO_COMPANYNAME="ClawdPanel" \
             -DINFO_PRODUCTNAME="Clawd Panel" \
