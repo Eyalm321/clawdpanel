@@ -13,6 +13,7 @@ use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
 
 use clawdpanel_ui::{BrandMenuWindow, Menu, Theme};
+#[cfg(target_os = "linux")]
 use clawdpanel_platform_shell::WindowOps;
 use crate::settings::UiState;
 
@@ -89,7 +90,7 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
             };
 
             let configure_window = |w: &BrandMenuWindow| -> bool {
-                let xid = w.window().with_winit_window(|win| {
+                let _xid = w.window().with_winit_window(|win| {
                     crate::x11_window_id(win)
                 }).flatten();
 
@@ -104,7 +105,7 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
                 }).is_some();
 
                 #[cfg(target_os = "linux")]
-                if let Some(id) = xid {
+                if let Some(id) = _xid {
                     if let Ok(xwin) = clawdpanel_platform_shell::X11Window::new(id) {
                         xwin.apply_menu_styles();
                         xwin.move_to(x, y);
@@ -120,7 +121,7 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
             if !configure_window(w) {
                 let w_weak = w.as_weak();
                 std::thread::spawn(move || {
-                    for attempt in 1..=10 {
+                    for _attempt in 1..=10 {
                         std::thread::sleep(Duration::from_millis(30));
                         let (tx, rx) = std::sync::mpsc::channel();
                         let w_weak2 = w_weak.clone();
@@ -128,7 +129,7 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
                         let invoke_res = slint::invoke_from_event_loop(move || {
                             let mut configured = false;
                             if let Some(w) = w_weak2.upgrade() {
-                                let xid = w.window().with_winit_window(|win| {
+                                let _xid = w.window().with_winit_window(|win| {
                                     crate::x11_window_id(win)
                                 }).flatten();
 
@@ -143,11 +144,11 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
                                 }).is_some();
 
                                 #[cfg(target_os = "linux")]
-                                if let Some(id) = xid {
+                                if let Some(id) = _xid {
                                     if let Ok(xwin) = clawdpanel_platform_shell::X11Window::new(id) {
                                         xwin.apply_menu_styles();
                                         xwin.move_to(x, y);
-                                        eprintln!("[menu] Deferred X11 menu window type and position (x={}, y={}) applied via x11rb (attempt {})", x, y, attempt);
+                                        eprintln!("[menu] Deferred X11 menu window type and position (x={}, y={}) applied via x11rb (attempt {})", x, y, _attempt);
                                     }
                                 }
                                 configured = winit_ok;
@@ -173,7 +174,7 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
             // Start focus loss timer
             let timer = slint::Timer::default();
             let state_weak = Rc::downgrade(state);
-            let mon_clone = mon.clone();
+            let _mon_clone = mon.clone();
             timer.start(
                 slint::TimerMode::Repeated,
                 Duration::from_millis(100),
@@ -203,14 +204,14 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
                                 }
                                 
                                 // Check if cursor is over the brand button bounds (anchor)
-                                let mon_bottom = mon_clone.top + mon_clone.height;
-                                let y_bar = if mon_clone.dock_edge == "bottom" {
+                                let mon_bottom = _mon_clone.top + _mon_clone.height;
+                                let y_bar = if _mon_clone.dock_edge == "bottom" {
                                     mon_bottom - (bar_height as f64 * scale) as i32
                                 } else {
-                                    mon_clone.top + (mon_clone.work_top_offset as f64 * scale) as i32
+                                    _mon_clone.top + (_mon_clone.work_top_offset as f64 * scale) as i32
                                 };
-                                let btn_x_min = mon_clone.left;
-                                let btn_x_max = mon_clone.left + (23.0 * scale) as i32;
+                                let btn_x_min = _mon_clone.left;
+                                let btn_x_max = _mon_clone.left + (23.0 * scale) as i32;
                                 let btn_y_min = y_bar;
                                 let btn_y_max = y_bar + (bar_height as f64 * scale) as i32;
                                 
