@@ -87,6 +87,18 @@ pub fn staticize_live_mpd_window(body: &str, window_ms: i64) -> Result<String> {
         return Err(Error::new("segment timeline uses r= repeat compaction"));
     }
 
+    // Drop the last 5 segments from the live edge to avoid 403 Forbidden errors
+    // on segments that are listed in the manifest but not yet ready on the CDN.
+    let drop_trailing = 5;
+    out = RE_SEG_LIST_BLOCK
+        .replace_all(&out, |caps: &Captures| {
+            let mut block = caps[0].to_string();
+            block = trim_trailing(&block, &RE_S_ENTRY, drop_trailing);
+            block = trim_trailing(&block, &RE_SEG_URL, drop_trailing);
+            block
+        })
+        .into_owned();
+
     let s_entries: Vec<&str> = RE_S_ENTRY.find_iter(&out).map(|m| m.as_str()).collect();
     if s_entries.is_empty() {
         return Err(Error::new("MPD has no segment timeline"));
@@ -169,6 +181,24 @@ fn replace_int_attr(tag: &str, re: &Regex, name: &str, f: impl Fn(i64) -> i64) -
     .into_owned()
 }
 
+/// Removes the last `drop_count` matches of `re` from `body` (keeping the
+/// rest + the text between matches).
+fn trim_trailing(body: &str, re: &Regex, drop_count: usize) -> String {
+    let locs: Vec<(usize, usize)> = re.find_iter(body).map(|m| (m.start(), m.end())).collect();
+    if locs.len() <= drop_count {
+        return body.to_string();
+    }
+    let drop = &locs[locs.len() - drop_count..];
+    let mut out = String::with_capacity(body.len());
+    let mut prev = 0;
+    for &(start, end) in drop {
+        out.push_str(&body[prev..start]);
+        prev = end;
+    }
+    out.push_str(&body[prev..]);
+    out
+}
+
 /// Removes all but the last `keep` matches of `re` from `body` (keeping the
 /// freshest tail + the text between matches). (Go `trimLeading`.)
 fn trim_leading(body: &str, re: &Regex, keep: usize) -> String {
@@ -196,7 +226,7 @@ mod tests {
     const FIXTURE_START: i64 = 1503782;
     const FIXTURE_SEG_MS: i64 = 5000;
     const FIXTURE_SEGS: i64 = 12;
-    const FIXTURE_LAST_SEG_URL: &str = r#"media="sq/1506661/"#;
+    const FIXTURE_LAST_SEG_URL: &str = r#"media="sq/1506656/"#;
 
     fn fixture() -> String {
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/live-dynamic.mpd"))
@@ -223,7 +253,7 @@ mod tests {
         // 30min window ≫ the fixture's 12×5s: nothing trimmed, offsets unchanged.
         assert!(out.contains(&format!(r#"presentationTimeOffset="{FIXTURE_PTO}""#)));
         assert!(out.contains(&format!(r#"startNumber="{FIXTURE_START}""#)));
-        assert!(out.contains(r#"mediaPresentationDuration="PT60.000S""#));
+        assert!(out.contains(r#"mediaPresentationDuration="PT35.000S""#));
     }
 
     #[test]
@@ -232,7 +262,7 @@ mod tests {
         let out = staticize_live_mpd_window(&fixture(), 20 * 1000).expect("staticize");
         assert!(well_formed(&out));
 
-        let dropped = FIXTURE_SEGS - 4;
+        let dropped = FIXTURE_SEGS - 5 - 4;
         let want_pto = FIXTURE_PTO + dropped * FIXTURE_SEG_MS;
         let want_start = FIXTURE_START + dropped;
         assert!(out.contains(&format!(r#"presentationTimeOffset="{want_pto}""#)), "PTO not shifted");

@@ -28,7 +28,7 @@ fn main() {
         return;
     }
     
-    println!("Waiting for 25 seconds to stream...");
-    std::thread::sleep(std::time::Duration::from_secs(25));
+    println!("Waiting for 90 seconds to stream...");
+    std::thread::sleep(std::time::Duration::from_secs(90));
     println!("Finished test_radio!");
 }

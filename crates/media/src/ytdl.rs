@@ -76,6 +76,7 @@ pub struct YtdlResolver {
     byte_cache: Mutex<ByteCacheMap>,
     live_dash: Mutex<HashMap<String, String>>,
     live_dash_body: Mutex<HashMap<String, ManifestBody>>,
+    bound_clients: Mutex<HashMap<std::net::IpAddr, reqwest::Client>>,
 }
 
 impl YtdlResolver {
@@ -120,6 +121,7 @@ impl YtdlResolver {
             byte_cache: Mutex::new(ByteCacheMap::default()),
             live_dash: Mutex::new(HashMap::new()),
             live_dash_body: Mutex::new(HashMap::new()),
+            bound_clients: Mutex::new(HashMap::new()),
         });
 
         let app = Router::new()
@@ -277,25 +279,47 @@ impl YtdlResolver {
             let bodies = self.live_dash_body.lock();
             if let Some(c) = bodies.get(video_id) {
                 if c.at.elapsed() < DASH_BODY_TTL {
+                    println!("[Proxy] serve_live_manifest: serving cached manifest for {}", video_id);
                     return dash_response(c.body.clone());
                 }
             }
         }
         let upstream = self.live_dash.lock().get(video_id).cloned();
-        let Some(upstream) = upstream else {
-            return error_response(StatusCode::NOT_FOUND, "unknown live stream");
+        let upstream_url = match upstream {
+            Some(url) => url,
+            None => {
+                println!("[Proxy] serve_live_manifest: cache missed or cleared due to 403, re-resolving...");
+                match self.reresolve_dash(video_id).await {
+                    Some(fresh) => fresh,
+                    None => {
+                        println!("[Proxy] serve_live_manifest: re-resolve failed");
+                        return error_response(StatusCode::BAD_GATEWAY, "manifest unavailable");
+                    }
+                }
+            }
         };
 
-        let body = match self.fetch_manifest(&upstream).await {
+        println!("[Proxy] serve_live_manifest: fetching fresh manifest from upstream: {}", upstream_url);
+        let body = match self.fetch_manifest(&upstream_url).await {
             Some(b) => b,
             None => {
+                println!("[Proxy] serve_live_manifest: fetch_manifest failed, re-resolving...");
                 // Upstream manifest URLs expire (~6h) — re-resolve once and retry.
                 match self.reresolve_dash(video_id).await {
-                    Some(fresh) => match self.fetch_manifest(&fresh).await {
-                        Some(b) => b,
-                        None => return error_response(StatusCode::BAD_GATEWAY, "manifest unavailable"),
-                    },
-                    None => return error_response(StatusCode::BAD_GATEWAY, "manifest unavailable"),
+                    Some(fresh) => {
+                        println!("[Proxy] serve_live_manifest: re-resolved fresh manifest: {}", fresh);
+                        match self.fetch_manifest(&fresh).await {
+                            Some(b) => b,
+                            None => {
+                                println!("[Proxy] serve_live_manifest: fetch_manifest after re-resolve failed");
+                                return error_response(StatusCode::BAD_GATEWAY, "manifest unavailable");
+                            }
+                        }
+                    }
+                    None => {
+                        println!("[Proxy] serve_live_manifest: re-resolve failed");
+                        return error_response(StatusCode::BAD_GATEWAY, "manifest unavailable");
+                    }
                 }
             }
         };
@@ -324,7 +348,11 @@ impl YtdlResolver {
 
     /// Fetches a manifest body, returning `None` on transport error / non-200.
     async fn fetch_manifest(&self, url: &str) -> Option<Vec<u8>> {
-        let resp = self.http.get(url).send().await.ok()?;
+        let client = self.client_for_url(url);
+        let is_v6 = url_prefers_ipv6(url);
+        println!("[Proxy] fetch_manifest (is_v6={}): {}", is_v6, url);
+        let resp = client.get(url).send().await.ok()?;
+        println!("[Proxy] fetch_manifest status: {}", resp.status());
         if resp.status() != StatusCode::OK {
             return None;
         }
@@ -598,7 +626,8 @@ async fn hls_master_handler(
         Ok(t) => t,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let resp = match r.http.get(&track.url)
+    let client = r.client_for_url(&track.url);
+    let resp = match client.get(&track.url)
         .header(header::REFERER, "https://www.youtube.com/")
         .header(header::ORIGIN, "https://www.youtube.com")
         .send().await {
@@ -650,7 +679,8 @@ async fn hls_sub_handler(
         Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid UTF-8 in url"),
     };
 
-    let resp = match r.http.get(&real_url)
+    let client = r.client_for_url(&real_url);
+    let resp = match client.get(&real_url)
         .header(header::REFERER, "https://www.youtube.com/")
         .header(header::ORIGIN, "https://www.youtube.com")
         .send().await {
@@ -727,9 +757,39 @@ async fn proxy_segment_handler(
 
 impl YtdlResolver {
     fn client_for_url(&self, url: &str) -> reqwest::Client {
+        if let Some(ip) = parse_url_ip(url) {
+            println!("[Proxy] client_for_url: parsed IP {} from URL", ip);
+            if ip.is_ipv6() {
+                let mut map = self.bound_clients.lock();
+                if let Some(client) = map.get(&ip) {
+                    println!("[Proxy] client_for_url: returning cached client for local IPv6 address {}", ip);
+                    return client.clone();
+                }
+                match reqwest::Client::builder()
+                    .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                    .local_address(ip)
+                    .build()
+                {
+                    Ok(client) => {
+                        println!("[Proxy] client_for_url: successfully created and cached client bound to local IPv6 address {}", ip);
+                        map.insert(ip, client.clone());
+                        return client;
+                    }
+                    Err(e) => {
+                        println!("[Proxy] client_for_url: failed to bind client to local IPv6 address {}: {}", ip, e);
+                    }
+                }
+            } else {
+                println!("[Proxy] client_for_url: parsed IP is IPv4, not binding to it");
+            }
+        } else {
+            println!("[Proxy] client_for_url: no IP parsed from URL");
+        }
         if url_prefers_ipv6(url) {
+            println!("[Proxy] client_for_url: URL prefers IPv6, using default http_v6 client");
             self.http_v6.clone()
         } else {
+            println!("[Proxy] client_for_url: URL prefers IPv4/other, using default http_v4 client");
             self.http_v4.clone()
         }
     }
@@ -754,6 +814,13 @@ impl YtdlResolver {
         };
         let status = upstream.status();
         println!("[ProxySegment] status response: {}", status);
+        if status == StatusCode::FORBIDDEN {
+            if let Some(video_id) = parse_video_id(target_url) {
+                println!("[ProxySegment] Got 403 Forbidden for video_id: {}, forcing manifest re-resolve", video_id);
+                self.live_dash.lock().remove(&video_id);
+                self.live_dash_body.lock().remove(&video_id);
+            }
+        }
         if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
             let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
             println!("[ProxySegment] error body: {}", body_text);
@@ -802,6 +869,33 @@ fn url_prefers_ipv6(url: &str) -> bool {
     ip.contains(':') || ip.contains("%3A") || ip.contains("%3a")
 }
 
+fn parse_url_ip(url: &str) -> Option<std::net::IpAddr> {
+    let ip_str = if let Some(pos) = url.find("/ip/") {
+        &url[pos + 4..]
+    } else if let Some(pos) = url.find("ip=") {
+        &url[pos + 3..]
+    } else {
+        return None;
+    };
+    let end = ip_str.find(|c| c == '/' || c == '&').unwrap_or(ip_str.len());
+    let ip_raw = &ip_str[..end];
+    let decoded = ip_raw.replace("%3A", ":").replace("%3a", ":");
+    decoded.parse::<std::net::IpAddr>().ok()
+}
+
+fn parse_video_id(url: &str) -> Option<String> {
+    let id_str = if let Some(pos) = url.find("/id/") {
+        &url[pos + 4..]
+    } else if let Some(pos) = url.find("id=") {
+        &url[pos + 3..]
+    } else {
+        return None;
+    };
+    let end = id_str.find(|c| c == '/' || c == '&').unwrap_or(id_str.len());
+    let raw_id = &id_str[..end];
+    let dot_end = raw_id.find('.').unwrap_or(raw_id.len());
+    Some(raw_id[..dot_end].to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -974,6 +1068,19 @@ mod tests {
                 .await
                 .expect("proxy GET");
             eprintln!("proxy status: {} (403 = known extraction gap)", resp.status());
+
+            // Wait and monitor background download
+            for i in 0..15 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let cached = resolver.byte_cache.lock().get("BGXOYfZMR0w");
+                if let Some(vc) = cached {
+                    if let Some((_buf, total, ctype)) = vc.complete_snapshot() {
+                        eprintln!("Download complete after {}s! total={}, ctype={}", i + 1, total, ctype);
+                        return;
+                    }
+                }
+            }
+            panic!("Download did not complete in 15 seconds!");
         });
     }
 

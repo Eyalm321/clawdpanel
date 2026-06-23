@@ -159,23 +159,28 @@ pub async fn download_into(
         _ = cancel.cancelled() => return,
     }
 
+    log::info!("[Proxy] download_into started");
     let (total, ctype) = match probe_size(&client, &direct_url).await {
         Ok(v) => v,
         Err(_) => {
+            log::warn!("[Proxy] download_into: probe_size failed");
             vc.fail();
             return;
         }
     };
     if total <= 0 {
+        log::warn!("[Proxy] download_into: total size <= 0 ({total})");
         vc.fail();
         return;
     }
+    log::info!("[Proxy] download_into: total size = {total}, content-type = {ctype}");
 
     let mut segs = DL_SEGMENTS;
     if total / segs < DL_MIN_SEGMENT {
         segs = (total / DL_MIN_SEGMENT + 1).max(1);
     }
     let seg_size = total / segs;
+    log::info!("[Proxy] download_into: splitting into {segs} segments of size {seg_size}");
 
     let mut set: JoinSet<std::result::Result<(usize, Bytes), ()>> = JoinSet::new();
     for i in 0..segs {
@@ -215,9 +220,11 @@ pub async fn download_into(
         return;
     }
     if failed {
+        log::warn!("[Proxy] download_into: one or more segments failed to download");
         vc.fail();
         return;
     }
+    log::info!("[Proxy] download_into: successfully completed downloading all segments");
     vc.finish(buf.freeze(), total, ctype);
 }
 
@@ -228,16 +235,31 @@ async fn fetch_segment(
     start: i64,
     end: i64,
 ) -> std::result::Result<Bytes, ()> {
-    let resp = client
+    let res = client
         .get(url)
         .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+        .header(reqwest::header::REFERER, "https://www.youtube.com/")
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
         .send()
-        .await
-        .map_err(|_| ())?;
+        .await;
+    let resp = match res {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[Proxy] fetch_segment {start}-{end} failed to send: {e}");
+            return Err(());
+        }
+    };
     if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        log::warn!(
+            "[Proxy] fetch_segment {start}-{end} returned non-206 status: {}",
+            resp.status()
+        );
         return Err(());
     }
-    resp.bytes().await.map_err(|_| ())
+    resp.bytes().await.map_err(|e| {
+        log::warn!("[Proxy] fetch_segment {start}-{end} failed to read body: {e}");
+        ()
+    })
 }
 
 /// Fetches the total length + content type with a 1-byte ranged GET (the total
@@ -246,12 +268,24 @@ async fn probe_size(
     client: &reqwest::Client,
     url: &str,
 ) -> std::result::Result<(i64, String), ()> {
-    let resp = client
+    let res = client
         .get(url)
         .header(reqwest::header::RANGE, "bytes=0-0")
+        .header(reqwest::header::REFERER, "https://www.youtube.com/")
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
         .send()
-        .await
-        .map_err(|_| ())?;
+        .await;
+    let resp = match res {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[Proxy] probe_size failed to send: {e}");
+            return Err(());
+        }
+    };
+    if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        log::warn!("[Proxy] probe_size returned non-success status: {}", resp.status());
+        return Err(());
+    }
     let ctype = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
