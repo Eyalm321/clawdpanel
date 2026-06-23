@@ -499,7 +499,7 @@ async fn stream_handler(
     if let Some((buf, total, ctype)) = vc.complete_snapshot() {
         return serve_from_buffer(&headers, buf, total, &ctype);
     }
-    r.passthrough(&headers, &id).await
+    r.passthrough(&headers, &id, vc).await
 }
 
 /// `/dash` (live): repaired static manifest.
@@ -513,7 +513,7 @@ async fn dash_handler(State(r): State<Arc<YtdlResolver>>, Query(q): Query<IdPara
 impl YtdlResolver {
     /// Proxies a single range request straight to googlevideo while the in-RAM
     /// copy is still downloading. (Go `passthrough`.)
-    async fn passthrough(&self, headers: &HeaderMap, video_id: &str) -> Response {
+    async fn passthrough(&self, headers: &HeaderMap, video_id: &str, vc: Arc<VideoCache>) -> Response {
         let track = match self.resolve_direct(video_id, false).await {
             Ok(t) => t,
             Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -543,6 +543,18 @@ impl YtdlResolver {
             return error_response(status, &body_text);
         }
 
+        let total = if let Some(cr) = upstream.headers().get(header::CONTENT_RANGE).and_then(|v| v.to_str().ok()) {
+            cr.rsplit('/').next().and_then(|t| t.trim().parse::<i64>().ok())
+        } else {
+            upstream.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|t| t.trim().parse::<i64>().ok())
+        }.unwrap_or(0);
+
+        let range_h = headers
+            .get(header::RANGE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let (start, end, _is_range) = crate::proxy::parse_range(range_h, total);
+
         let mut builder = Response::builder().status(status);
         for h in [header::CONTENT_TYPE, header::CONTENT_LENGTH, header::CONTENT_RANGE] {
             if let Some(v) = upstream.headers().get(&h) {
@@ -550,8 +562,55 @@ impl YtdlResolver {
             }
         }
         builder = builder.header(header::ACCEPT_RANGES, "bytes");
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<Bytes, std::io::Error>>(16);
+        let mut upstream_stream = upstream.bytes_stream();
+
+        tokio::spawn(async move {
+            let mut bytes_written = 0;
+            loop {
+                // Check if the cache has completed
+                if let Some((buf, _total, _ctype)) = vc.complete_snapshot() {
+                    println!("[Passthrough] Cache completed! Switching to in-memory buffer at offset {}", start + bytes_written);
+                    let current_pos = (start + bytes_written) as usize;
+                    let end_pos = (end + 1) as usize;
+                    if current_pos < buf.len() && current_pos < end_pos {
+                        let slice = buf.slice(current_pos..end_pos.min(buf.len()));
+                        let _ = tx.send(Ok(slice)).await;
+                    }
+                    break;
+                }
+
+                use futures_util::StreamExt;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                        // Wake up periodically to check cache completion status
+                    }
+                    next = upstream_stream.next() => {
+                        match next {
+                            Some(Ok(bytes)) => {
+                                let len = bytes.len() as i64;
+                                if tx.send(Ok(bytes)).await.is_err() {
+                                    break;
+                                }
+                                bytes_written += len;
+                            }
+                            Some(Err(e)) => {
+                                println!("[Passthrough] Upstream read error: {}", e);
+                                let _ = tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, e))).await;
+                                break;
+                            }
+                            None => {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         builder
-            .body(Body::from_stream(upstream.bytes_stream()))
+            .body(Body::from_stream(ReceiverStream(rx)))
             .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
     }
 }
@@ -1103,5 +1162,18 @@ mod tests {
                 panic!("Playlist::get failed: {:?}", e);
             }
         }
+    }
+}
+
+struct ReceiverStream(tokio::sync::mpsc::Receiver<std::result::Result<Bytes, std::io::Error>>);
+
+impl futures_util::Stream for ReceiverStream {
+    type Item = std::result::Result<Bytes, std::io::Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
     }
 }
