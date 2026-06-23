@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 /// instant.
 const DL_SEGMENTS: i64 = 8;
 const DL_MIN_SEGMENT: i64 = 1 << 20; // 1 MiB: don't over-split small files
-pub const DL_START_DELAY_MS: u64 = 1500; // playback head start before the fan-out
+pub const DL_START_DELAY_MS: u64 = 200; // playback head start before the fan-out
 
 /// Parses a single `bytes=start-end` header against the known total. Only the
 /// first range is honoured. Returns `is_range=false` for an absent/unparseable

@@ -48,6 +48,26 @@ const PLAYLIST_CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
 const DASH_BODY_TTL: Duration = Duration::from_millis(1500);
 
 static RE_BASE_URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)<BaseURL\b([^>]*)>(.*?)</BaseURL>"#).unwrap());
+static RE_SQ: Lazy<Regex> = Lazy::new(|| Regex::new(r#"/sq/(\d+)/"#).unwrap());
+
+#[derive(Clone, Debug)]
+enum SegmentStatus {
+    Pending,
+    Done(Bytes),
+    Failed,
+}
+
+#[derive(Clone)]
+enum SegmentState {
+    InFlight(tokio::sync::watch::Receiver<SegmentStatus>),
+    Complete(Bytes),
+}
+
+struct SegmentEntry {
+    state: SegmentState,
+    at: Instant,
+}
+
 
 struct TrackEntry {
     track: ResolvedTrack,
@@ -77,6 +97,7 @@ pub struct YtdlResolver {
     live_dash: Mutex<HashMap<String, String>>,
     live_dash_body: Mutex<HashMap<String, ManifestBody>>,
     bound_clients: Mutex<HashMap<std::net::IpAddr, reqwest::Client>>,
+    segment_cache: Mutex<HashMap<String, SegmentEntry>>,
 }
 
 impl YtdlResolver {
@@ -98,16 +119,20 @@ impl YtdlResolver {
         // byte-cache + passthrough are accepted (the proxy's reason to exist).
         let http = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let http_v4 = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let http_v6 = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .local_address(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let resolver = Arc::new(YtdlResolver {
@@ -122,6 +147,7 @@ impl YtdlResolver {
             live_dash: Mutex::new(HashMap::new()),
             live_dash_body: Mutex::new(HashMap::new()),
             bound_clients: Mutex::new(HashMap::new()),
+            segment_cache: Mutex::new(HashMap::new()),
         });
 
         let app = Router::new()
@@ -827,6 +853,7 @@ impl YtdlResolver {
                 match reqwest::Client::builder()
                     .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                     .local_address(ip)
+                    .timeout(std::time::Duration::from_secs(10))
                     .build()
                 {
                     Ok(client) => {
@@ -853,49 +880,192 @@ impl YtdlResolver {
         }
     }
 
-    async fn proxy_segment(&self, headers: &HeaderMap, target_url: &str) -> Response {
-        let client = self.client_for_url(target_url);
-        let is_v6 = url_prefers_ipv6(target_url);
-        println!("[ProxySegment] Fetching segment (is_v6={}): {}", is_v6, target_url);
+    async fn proxy_segment(self: &Arc<Self>, _headers: &HeaderMap, target_url: &str) -> Response {
+        // Trigger prefetch for the NEXT segments (N+1 and N+2)
+        self.trigger_prefetch(target_url);
 
-        let mut req = client.get(target_url)
-            .header(header::REFERER, "https://www.youtube.com/")
-            .header(header::ORIGIN, "https://www.youtube.com");
-        if let Some(rng) = headers.get(header::RANGE) {
-            req = req.header(header::RANGE, rng);
-        }
-        let upstream = match req.send().await {
-            Ok(u) => u,
+        match self.fetch_or_await_segment(target_url, false).await {
+            Ok(body_bytes) => {
+                let mut builder = Response::builder().status(StatusCode::OK);
+                builder = builder.header(header::CONTENT_TYPE, "audio/mp4");
+                builder = builder.header(header::ACCEPT_RANGES, "bytes");
+                builder = builder.header(header::CONTENT_LENGTH, body_bytes.len().to_string());
+                builder.body(Body::from(body_bytes)).unwrap()
+            }
             Err(e) => {
-                println!("[ProxySegment] request error: {}", e);
-                return error_response(StatusCode::BAD_GATEWAY, &e.to_string());
-            }
-        };
-        let status = upstream.status();
-        println!("[ProxySegment] status response: {}", status);
-        if status == StatusCode::FORBIDDEN {
-            if let Some(video_id) = parse_video_id(target_url) {
-                println!("[ProxySegment] Got 403 Forbidden for video_id: {}, forcing manifest re-resolve", video_id);
-                self.live_dash.lock().remove(&video_id);
-                self.live_dash_body.lock().remove(&video_id);
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, &e)
             }
         }
-        if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
-            let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
-            println!("[ProxySegment] error body: {}", body_text);
-            return error_response(status, &body_text);
+    }
+
+    fn trigger_prefetch(self: &Arc<Self>, url: &str) {
+        let Some(caps) = RE_SQ.captures(url) else {
+            return;
+        };
+        let Some(sq_match) = caps.get(1) else {
+            return;
+        };
+        let Ok(sq_num) = sq_match.as_str().parse::<i64>() else {
+            return;
+        };
+        
+        // Prefetch N+1 and N+2 to stay well ahead of the playback head
+        for offset in 1..=2 {
+            let next_sq = sq_num + offset;
+            let next_url = url.replace(&format!("/sq/{}/", sq_num), &format!("/sq/{}/", next_sq));
+
+            if self.segment_cache.lock().contains_key(&next_url) {
+                continue;
+            }
+
+            let me = Arc::clone(self);
+            self.rt.spawn(async move {
+                let _ = me.fetch_or_await_segment(&next_url, true).await;
+            });
+        }
+    }
+
+    async fn fetch_or_await_segment(self: &Arc<Self>, url: &str, is_prefetch: bool) -> std::result::Result<Bytes, String> {
+        // Clean up expired segments (older than 30s)
+        {
+            let mut cache = self.segment_cache.lock();
+            cache.retain(|_, entry| entry.at.elapsed() < Duration::from_secs(30));
         }
 
-        let mut builder = Response::builder().status(status);
-        for h in [header::CONTENT_TYPE, header::CONTENT_LENGTH, header::CONTENT_RANGE] {
-            if let Some(v) = upstream.headers().get(&h) {
-                builder = builder.header(h, v);
+        loop {
+            let state_opt = self.segment_cache.lock().get(url).map(|e| e.state.clone());
+
+            match state_opt {
+                Some(SegmentState::Complete(bytes)) => {
+                    println!("[ProxySegment] Cache hit for complete segment: {}", url);
+                    return Ok(bytes);
+                }
+                Some(SegmentState::InFlight(mut rx)) => {
+                    println!("[ProxySegment] Request in-flight, awaiting completion for (is_prefetch={}): {}", is_prefetch, url);
+                    let mut success_bytes = None;
+                    loop {
+                        {
+                            let status = rx.borrow();
+                            match &*status {
+                                SegmentStatus::Done(bytes) => {
+                                    println!("[ProxySegment] In-flight request completed successfully: {}", url);
+                                    success_bytes = Some(bytes.clone());
+                                    break;
+                                }
+                                SegmentStatus::Failed => {
+                                    println!("[ProxySegment] In-flight request failed: {}", url);
+                                    break;
+                                }
+                                SegmentStatus::Pending => {}
+                            }
+                        }
+                        if rx.changed().await.is_err() {
+                            println!("[ProxySegment] In-flight request watch channel closed: {}", url);
+                            break;
+                        }
+                    }
+                    if let Some(bytes) = success_bytes {
+                        return Ok(bytes);
+                    }
+                    if !is_prefetch {
+                        println!("[ProxySegment] In-flight request failed, caller is player. Removing from cache and retrying upstream fetch directly.");
+                        {
+                            let mut cache = self.segment_cache.lock();
+                            let remove_entry = if let Some(entry) = cache.get(url) {
+                                match &entry.state {
+                                    SegmentState::InFlight(entry_rx) => {
+                                        entry_rx.same_channel(&rx)
+                                    }
+                                    _ => false,
+                                }
+                            } else {
+                                false
+                            };
+                            if remove_entry {
+                                cache.remove(url);
+                            }
+                        }
+                        continue;
+                    } else {
+                        return Err("in-flight request failed".to_string());
+                    }
+                }
+                None => {
+                    // Initialize in-flight state
+                    let (tx, rx) = tokio::sync::watch::channel(SegmentStatus::Pending);
+                    self.segment_cache.lock().insert(
+                        url.to_string(),
+                        SegmentEntry {
+                            state: SegmentState::InFlight(rx),
+                            at: Instant::now(),
+                        },
+                    );
+
+                    println!("[ProxySegment] Cache miss (is_prefetch={}), fetching segment from upstream: {}", is_prefetch, url);
+                    let client = self.client_for_url(url);
+                    let req = client.get(url)
+                        .header(header::REFERER, "https://www.youtube.com/")
+                        .header(header::ORIGIN, "https://www.youtube.com");
+                    
+                    let upstream = match req.send().await {
+                        Ok(u) => u,
+                        Err(e) => {
+                            println!("[ProxySegment] upstream send error: {}", e);
+                            let _ = tx.send(SegmentStatus::Failed);
+                            self.segment_cache.lock().remove(url);
+                            return Err(e.to_string());
+                        }
+                    };
+
+                    let status = upstream.status();
+                    println!("[ProxySegment] upstream status response: {}", status);
+                    if status == StatusCode::FORBIDDEN {
+                        if !is_prefetch {
+                            if let Some(video_id) = parse_video_id(url) {
+                                println!("[ProxySegment] Got 403 Forbidden for video_id: {}, forcing manifest re-resolve", video_id);
+                                self.live_dash.lock().remove(&video_id);
+                                self.live_dash_body.lock().remove(&video_id);
+                            }
+                        } else {
+                            println!("[ProxySegment] Prefetch got 403 Forbidden for: {} (not clearing manifest cache)", url);
+                        }
+                    }
+                    if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+                        let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
+                        println!("[ProxySegment] upstream error body: {}", body_text);
+                        let _ = tx.send(SegmentStatus::Failed);
+                        self.segment_cache.lock().remove(url);
+                        return Err(format!("upstream returned error status: {}", status));
+                    }
+
+                    let body_bytes = match upstream.bytes().await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            println!("[ProxySegment] upstream bytes read error: {}", e);
+                            let _ = tx.send(SegmentStatus::Failed);
+                            self.segment_cache.lock().remove(url);
+                            return Err(e.to_string());
+                        }
+                    };
+
+                    // Store as completed
+                    {
+                        let mut cache = self.segment_cache.lock();
+                        cache.insert(
+                            url.to_string(),
+                            SegmentEntry {
+                                state: SegmentState::Complete(body_bytes.clone()),
+                                at: Instant::now(),
+                            },
+                        );
+                    }
+
+                    // Notify all listeners
+                    let _ = tx.send(SegmentStatus::Done(body_bytes.clone()));
+                    return Ok(body_bytes);
+                }
             }
         }
-        builder = builder.header(header::ACCEPT_RANGES, "bytes");
-        builder
-            .body(Body::from_stream(upstream.bytes_stream()))
-            .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
     }
 }
 
