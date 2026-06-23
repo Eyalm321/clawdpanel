@@ -422,6 +422,9 @@ fn check_stall(shared: &Arc<Shared>) -> bool {
     let fire = {
         let t = shared.track.lock();
         t.started_at.map_or(false, |t0| {
+            if t.live && t.confirmed {
+                return false;
+            }
             stall_should_fire(t.fill_done, t.progressed, t.watchdog_fired, t0.elapsed())
         })
     };
@@ -527,6 +530,7 @@ fn handle_state_changed(shared: &Arc<Shared>, new_state: gst::State, pending: gs
                     if t.phase.wants_playback() {
                         t.phase = Phase::Playing;
                         t.confirmed = true;
+                        t.started_at = Some(std::time::Instant::now());
                         Some(Event::state(State::Playing))
                     } else {
                         None

@@ -727,15 +727,6 @@ async fn proxy_segment_handler(
 
 impl YtdlResolver {
     fn client_for_url(&self, url: &str) -> reqwest::Client {
-        if let Some(ip) = parse_url_ip(url) {
-            if let Ok(client) = reqwest::Client::builder()
-                .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-                .local_address(ip)
-                .build()
-            {
-                return client;
-            }
-        }
         if url_prefers_ipv6(url) {
             self.http_v6.clone()
         } else {
@@ -811,19 +802,6 @@ fn url_prefers_ipv6(url: &str) -> bool {
     ip.contains(':') || ip.contains("%3A") || ip.contains("%3a")
 }
 
-fn parse_url_ip(url: &str) -> Option<std::net::IpAddr> {
-    let ip_str = if let Some(pos) = url.find("/ip/") {
-        &url[pos + 4..]
-    } else if let Some(pos) = url.find("ip=") {
-        &url[pos + 3..]
-    } else {
-        return None;
-    };
-    let end = ip_str.find(|c| c == '/' || c == '&').unwrap_or(ip_str.len());
-    let ip_raw = &ip_str[..end];
-    let decoded = ip_raw.replace("%3A", ":").replace("%3a", ":");
-    decoded.parse::<std::net::IpAddr>().ok()
-}
 
 #[cfg(test)]
 mod tests {
