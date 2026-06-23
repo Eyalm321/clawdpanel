@@ -47,6 +47,26 @@ const PLAYLIST_CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
 /// dashdemux refetches dynamic manifests every ~2s (~1MB each); cache briefly.
 const DASH_BODY_TTL: Duration = Duration::from_millis(1500);
 
+/// Caps concurrent upstream segment fetches. Bounds the deep readahead's startup
+/// fan-out so it can't open dozens of googlevideo connections at once (→ 403
+/// storm). The on-demand player request acquires this blocking (priority);
+/// readahead prefetch yields to it (try-acquire), so prefetch can never starve
+/// the segment the player needs now. Overridable via `CLAWD_SEG_CONCURRENCY`.
+const UPSTREAM_CONCURRENCY: usize = 8;
+/// Readahead depth: how many segments ahead of the player the proxy keeps warm in
+/// RAM. ~2s/segment, so 40 ≈ 80s — comfortably more than one adaptivedemux buffer
+/// cycle (~50s), the invariant that turns refill bursts into RAM cache hits.
+const READAHEAD_DEPTH: i64 = 40;
+/// Segment-cache TTL. Must exceed the readahead horizon plus one buffer cycle so a
+/// deep-prefetched segment survives until the player reaches it.
+const SEGMENT_CACHE_TTL_S: u64 = 180;
+static UPSTREAM_SEM: Lazy<tokio::sync::Semaphore> = Lazy::new(|| {
+    let n = std::env::var("CLAWD_SEG_CONCURRENCY").ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(UPSTREAM_CONCURRENCY);
+    tokio::sync::Semaphore::new(n.max(1))
+});
+
 static RE_BASE_URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)<BaseURL\b([^>]*)>(.*?)</BaseURL>"#).unwrap());
 static RE_SQ: Lazy<Regex> = Lazy::new(|| Regex::new(r#"/sq/(\d+)/"#).unwrap());
 
@@ -623,7 +643,7 @@ impl YtdlResolver {
                             }
                             Some(Err(e)) => {
                                 println!("[Passthrough] Upstream read error: {}", e);
-                                let _ = tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, e))).await;
+                                let _ = tx.send(Err(std::io::Error::other(e))).await;
                                 break;
                             }
                             None => {
@@ -909,8 +929,19 @@ impl YtdlResolver {
             return;
         };
         
-        // Prefetch N+1 and N+2 to stay well ahead of the playback head
-        for offset in 1..=2 {
+        // Maintain a deep readahead window so the proxy keeps the next ~80s of
+        // segments warm in RAM. adaptivedemux2 buffers in bursts: it fills its
+        // buffer, stops downloading, drains it to 0%, then refills. A shallow +2
+        // prefetch leaves the proxy cold during the ~50s drain, so the refill burst
+        // hits (often rate-limited) googlevideo and the buffer can't refill before
+        // audio runs out — the periodic ~1-min stall. A window deeper than one
+        // buffer cycle means the last fill-burst request pre-warms the *next* refill
+        // during the idle drain, so refills are served from RAM. Bounded upstream
+        // concurrency + live-priority acquisition (see UPSTREAM_SEM) keep the deep
+        // window from starving the on-demand request or stampeding googlevideo.
+        let depth: i64 = std::env::var("CLAWD_PREFETCH_DEPTH").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(READAHEAD_DEPTH);
+        for offset in 1..=depth {
             let next_sq = sq_num + offset;
             let next_url = url.replace(&format!("/sq/{}/", sq_num), &format!("/sq/{}/", next_sq));
 
@@ -926,10 +957,14 @@ impl YtdlResolver {
     }
 
     async fn fetch_or_await_segment(self: &Arc<Self>, url: &str, is_prefetch: bool) -> std::result::Result<Bytes, String> {
-        // Clean up expired segments (older than 30s)
+        // Clean up expired segments. The TTL must outlive the readahead horizon
+        // (depth × ~2s ≈ 80s) plus the time until playback reaches the segment
+        // (~one buffer cycle), or deep-prefetched segments get evicted before use.
         {
+            let ttl: u64 = std::env::var("CLAWD_SEG_TTL_S").ok()
+                .and_then(|s| s.parse().ok()).unwrap_or(SEGMENT_CACHE_TTL_S);
             let mut cache = self.segment_cache.lock();
-            cache.retain(|_, entry| entry.at.elapsed() < Duration::from_secs(30));
+            cache.retain(|_, entry| entry.at.elapsed() < Duration::from_secs(ttl));
         }
 
         loop {
@@ -1002,6 +1037,33 @@ impl YtdlResolver {
                     );
 
                     println!("[ProxySegment] Cache miss (is_prefetch={}), fetching segment from upstream: {}", is_prefetch, url);
+                    // Acquire an upstream slot. The on-demand player request (the
+                    // segment GStreamer needs NOW) acquires blocking — it has
+                    // priority. Readahead prefetch yields to it (try-acquire with
+                    // backoff), so a deep readahead can never queue ahead of, and
+                    // starve, the live request. Prefetch that can't get a slot
+                    // within the window simply gives up (it will be retried on the
+                    // next request, or fetched on demand).
+                    let _permit = if is_prefetch {
+                        let mut got = None;
+                        for _ in 0..200 {
+                            if let Ok(p) = UPSTREAM_SEM.try_acquire() {
+                                got = Some(p);
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        match got {
+                            Some(p) => p,
+                            None => {
+                                self.segment_cache.lock().remove(url);
+                                let _ = tx.send(SegmentStatus::Failed);
+                                return Err("prefetch upstream slot timeout".to_string());
+                            }
+                        }
+                    } else {
+                        UPSTREAM_SEM.acquire().await.unwrap()
+                    };
                     let client = self.client_for_url(url);
                     let req = client.get(url)
                         .header(header::REFERER, "https://www.youtube.com/")
@@ -1074,7 +1136,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn from_hex(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);
@@ -1093,7 +1155,7 @@ fn url_prefers_ipv6(url: &str) -> bool {
     } else {
         return false;
     };
-    let end = ip_str.find(|c| c == '/' || c == '&').unwrap_or(ip_str.len());
+    let end = ip_str.find(['/', '&']).unwrap_or(ip_str.len());
     let ip = &ip_str[..end];
     ip.contains(':') || ip.contains("%3A") || ip.contains("%3a")
 }
@@ -1106,7 +1168,7 @@ fn parse_url_ip(url: &str) -> Option<std::net::IpAddr> {
     } else {
         return None;
     };
-    let end = ip_str.find(|c| c == '/' || c == '&').unwrap_or(ip_str.len());
+    let end = ip_str.find(['/', '&']).unwrap_or(ip_str.len());
     let ip_raw = &ip_str[..end];
     let decoded = ip_raw.replace("%3A", ":").replace("%3a", ":");
     decoded.parse::<std::net::IpAddr>().ok()
@@ -1120,10 +1182,23 @@ fn parse_video_id(url: &str) -> Option<String> {
     } else {
         return None;
     };
-    let end = id_str.find(|c| c == '/' || c == '&').unwrap_or(id_str.len());
+    let end = id_str.find(['/', '&']).unwrap_or(id_str.len());
     let raw_id = &id_str[..end];
     let dot_end = raw_id.find('.').unwrap_or(raw_id.len());
     Some(raw_id[..dot_end].to_string())
+}
+
+struct ReceiverStream(tokio::sync::mpsc::Receiver<std::result::Result<Bytes, std::io::Error>>);
+
+impl futures_util::Stream for ReceiverStream {
+    type Item = std::result::Result<Bytes, std::io::Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
+    }
 }
 
 #[cfg(test)]
@@ -1333,17 +1408,18 @@ mod tests {
             }
         }
     }
-}
 
-struct ReceiverStream(tokio::sync::mpsc::Receiver<std::result::Result<Bytes, std::io::Error>>);
+    #[tokio::test]
+    #[ignore = "network: live YouTube extraction; hardcoded live id rotates"]
+    async fn test_print_staticized_manifest() {
+        let resolver = YtdlResolver::new(tokio::runtime::Handle::current()).unwrap();
+        // A LOFI Girl-style live id (rotates over time; jfKfPfyJRdk ended 2026-05).
+        let track = resolver.resolve("X4VbdwhkE10", true).await.unwrap();
+        println!("Resolved track URL: {}", track.url);
 
-impl futures_util::Stream for ReceiverStream {
-    type Item = std::result::Result<Bytes, std::io::Error>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.0.poll_recv(cx)
+        let client = reqwest::Client::new();
+        let resp = client.get(&track.url).send().await.unwrap();
+        let body = resp.text().await.unwrap();
+        println!("Staticized Manifest Body:\n{}", body);
     }
 }

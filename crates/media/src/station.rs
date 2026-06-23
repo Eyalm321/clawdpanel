@@ -104,7 +104,7 @@ impl StationState {
     /// Skip-on-failure threshold: ≤ queue length, capped at `MAX_FAIL_STREAK`,
     /// at least 1. (Go `failLimitLocked`.)
     fn fail_limit_locked(&self) -> usize {
-        self.queue.len().min(MAX_FAIL_STREAK).max(1)
+        self.queue.len().clamp(1, MAX_FAIL_STREAK)
     }
 }
 
@@ -337,10 +337,10 @@ impl StationPlayer {
                         action = Action::Advance;
                     }
                 }
-                State::Error => {
+                State::Error
                     // Terminal error for the current track → skip to next, or give
                     // up if the whole queue is dead.
-                    if !cur_id.is_empty() && (ev.video_id.is_empty() || ev.video_id == cur_id) {
+                    if !cur_id.is_empty() && (ev.video_id.is_empty() || ev.video_id == cur_id) => {
                         st.fail_streak += 1;
                         action = if st.fail_streak >= st.fail_limit_locked() {
                             Action::GiveUp
@@ -348,7 +348,6 @@ impl StationPlayer {
                             Action::Skip
                         };
                     }
-                }
                 _ => {}
             }
 
@@ -798,7 +797,7 @@ mod tests {
         let first = fc.next_played();
         wait_queue_len(&s, 10);
         let st = s.state.lock();
-        assert!(st.queue.iter().any(|id| *id == first), "first played not in queue");
+        assert!(st.queue.contains(&first), "first played not in queue");
         assert_eq!(st.queue[st.cur], first, "first played != queue[cur]");
     }
 

@@ -421,7 +421,7 @@ fn poll_position(shared: &Arc<Shared>) {
 fn check_stall(shared: &Arc<Shared>) -> bool {
     let fire = {
         let t = shared.track.lock();
-        t.started_at.map_or(false, |t0| {
+        t.started_at.is_some_and(|t0| {
             if t.live && t.confirmed {
                 return false;
             }
@@ -472,11 +472,10 @@ fn handle_message(shared: &Arc<Shared>, msg: &gst::Message) {
         MessageView::Buffering(b) => {
             handle_buffering(shared, b.percent());
         }
-        MessageView::StateChanged(sc) => {
-            if shared.is_from_playbin(msg) {
+        MessageView::StateChanged(sc)
+            if shared.is_from_playbin(msg) => {
                 handle_state_changed(shared, sc.current(), sc.pending());
             }
-        }
         _ => {}
     }
 }
@@ -562,6 +561,119 @@ fn handle_state_changed(shared: &Arc<Shared>, new_state: gst::State, pending: gs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Headless validation harness for the live-stream periodic buffering fix.
+    // Drives the REAL pipeline config (playbin, audio+soft-volume, managed preroll
+    // + fill, post-fill buffering dips ignored) against the live /dash URL into a
+    // fakesink sync=true (renders at 1x real-time, no audio device needed). Logs
+    // buffering% and detects position stalls.
+    //
+    // The periodic stall is throughput-bound, so it only reproduces on a connection
+    // that can't outpace the adaptivedemux refill burst. To compare on any machine:
+    //   CLAWD_PREFETCH_DEPTH=2  ... repro_live_buffering   # shallow (old) → stalls
+    //   (defaults)              ... repro_live_buffering   # deep readahead → smooth
+    // Knobs: CLAWD_REPRO_SECS (run length), CLAWD_REPRO_VID (live id; rotates),
+    // CLAWD_PREFETCH_DEPTH / CLAWD_SEG_TTL_S / CLAWD_SEG_CONCURRENCY (proxy tuning).
+    //
+    //   cargo test -p clawdpanel-media repro_live_buffering -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn repro_live_buffering() {
+        use crate::ytdl::YtdlResolver;
+        use crate::resolver::StreamResolver;
+
+        let secs: u64 = std::env::var("CLAWD_REPRO_SECS").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(150);
+        let vid = std::env::var("CLAWD_REPRO_VID").unwrap_or_else(|_| "X4VbdwhkE10".to_string());
+
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let resolver = YtdlResolver::new(rt.handle().clone()).unwrap();
+        let track = rt.block_on(async { resolver.resolve(&vid, true).await }).unwrap();
+        println!("[repro] dash url = {} (is_live={})", track.url, track.is_live);
+
+        gst::init().unwrap();
+        let playbin = gst::ElementFactory::make("playbin").name("repro").build().unwrap();
+        playbin.set_property_from_str("flags", "audio+soft-volume");
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        sink.set_property("sync", true); // honour timestamps → render at 1x real-time
+        playbin.set_property("audio-sink", &sink);
+        playbin.set_property("uri", &track.url);
+
+        let ret = playbin.set_state(gst::State::Paused).unwrap();
+        let live = ret == gst::StateChangeSuccess::NoPreroll;
+        if live { let _ = playbin.set_state(gst::State::Playing); }
+
+        let bus = playbin.bus().unwrap();
+        let t0 = Instant::now();
+        let mut fill_done = live;
+        let mut prerolled = false;
+        let mut low_buffer = false;
+        let mut last_pos_ns: i64 = -1;
+        let mut last_advance = Instant::now();
+        let mut stalls = 0u32;
+        let mut in_stall = false;
+        let mut last_buf = 100i32;
+        let filter = [gst::MessageType::Error, gst::MessageType::Eos,
+            gst::MessageType::Buffering, gst::MessageType::StateChanged, gst::MessageType::AsyncDone];
+
+        while t0.elapsed() < Duration::from_secs(secs) {
+            if let Some(msg) = bus.timed_pop_filtered(gst::ClockTime::from_mseconds(200), &filter) {
+                match msg.view() {
+                    gst::MessageView::Error(e) => {
+                        println!("[repro] {:>5.1}s ERROR {}", t0.elapsed().as_secs_f64(), e.error());
+                    }
+                    gst::MessageView::Eos(_) => {
+                        println!("[repro] {:>5.1}s EOS (window end → would re-resolve)", t0.elapsed().as_secs_f64());
+                        break;
+                    }
+                    gst::MessageView::AsyncDone(_) => {
+                        prerolled = true;
+                        if !fill_done && !low_buffer {
+                            fill_done = true;
+                            let _ = playbin.set_state(gst::State::Playing);
+                            println!("[repro] {:>5.1}s fill_done → PLAYING", t0.elapsed().as_secs_f64());
+                        }
+                    }
+                    gst::MessageView::Buffering(b) => {
+                        let p = b.percent();
+                        if p != last_buf {
+                            println!("[repro] {:>5.1}s BUFFERING {}%{}", t0.elapsed().as_secs_f64(), p,
+                                if fill_done { "  (post-fill: IGNORED by backend)" } else { "  (initial fill)" });
+                            last_buf = p;
+                        }
+                        // Mirror real backend handle_buffering: only managed pre-fill.
+                        let managed = !fill_done;
+                        if managed {
+                            low_buffer = p < 100;
+                            if p < 100 { let _ = playbin.set_state(gst::State::Paused); }
+                            else if prerolled { fill_done = true; let _ = playbin.set_state(gst::State::Playing); }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Position sampling + stall detection.
+            if let Some(pos) = playbin.query_position::<gst::ClockTime>() {
+                let ns = pos.nseconds() as i64;
+                if ns > last_pos_ns {
+                    if in_stall {
+                        println!("[repro] {:>5.1}s ▶ RESUMED after {:.1}s stall (pos={:.1}s)",
+                            t0.elapsed().as_secs_f64(), last_advance.elapsed().as_secs_f64(), ns as f64/1e9);
+                        in_stall = false;
+                    }
+                    last_pos_ns = ns;
+                    last_advance = Instant::now();
+                } else if fill_done && !in_stall && last_advance.elapsed() > Duration::from_secs(2) {
+                    stalls += 1;
+                    in_stall = true;
+                    println!("[repro] {:>5.1}s ⏸ STALL #{} — position frozen at {:.1}s",
+                        t0.elapsed().as_secs_f64(), stalls, last_pos_ns as f64/1e9);
+                }
+            }
+        }
+        let _ = playbin.set_state(gst::State::Null);
+        println!("[repro] DONE: {} stalls in {}s, final pos={:.1}s", stalls, secs, last_pos_ns as f64/1e9);
+    }
 
     // The stall watchdog's gating (the part that turns a wedged broken-HLS
     // pipeline into a terminal error so the controller/station give up instead
