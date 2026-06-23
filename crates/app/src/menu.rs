@@ -186,8 +186,10 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
                         return;
                     }
                     
-                    // Query current cursor position to see if it's over the menu or the brand button
+                    // Query current cursor position to see if it's over the menu or the brand button (Linux/X11 only)
+                    #[cfg(target_os = "linux")]
                     let mut cursor_over_menu_or_button = false;
+                    #[cfg(target_os = "linux")]
                     if let Some(w) = state.window.borrow().as_ref() {
                         let xid = w.window().with_winit_window(|win| crate::x11_window_id(win)).flatten();
                         if let Some(id) = xid {
@@ -220,6 +222,9 @@ pub fn toggle_brand_menu(ui: &Rc<UiState>) {
                             }
                         }
                     }
+                    
+                    #[cfg(not(target_os = "linux"))]
+                    let cursor_over_menu_or_button = false;
                     
                     let has_focus = state.window.borrow().as_ref()
                         .and_then(|w| w.window().with_winit_window(|win| win.has_focus()))

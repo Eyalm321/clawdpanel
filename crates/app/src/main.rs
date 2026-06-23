@@ -106,14 +106,14 @@ fn main() -> Result<(), slint::PlatformError> {
     w.window().set_size(slint::PhysicalSize::new(mon_width as u32, BAR_HEIGHT as u32));
 
     // Get XID and configure X11 dock styles and positioning before showing the window
-    let xid = w.window().with_winit_window(|win| {
+    let _xid = w.window().with_winit_window(|win| {
         win.set_decorations(false);
         win.set_window_level(WindowLevel::AlwaysOnTop);
         x11_window_id(win)
     }).flatten();
 
     #[cfg(target_os = "linux")]
-    if let Some(id) = xid {
+    if let Some(id) = _xid {
         if let Ok(xwin) = shell::X11Window::new(id) {
             xwin.apply_bar_styles();
             let monitors = shell::get_monitors();
@@ -297,7 +297,7 @@ fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>, reveal_slot
     // machine, update the bar's monitor label, then reflect it on the radio.
     {
         let ui = ui.clone();
-        let weak = w.as_weak();
+        let _weak = w.as_weak();
         backend.on_set_monitor(move |idx| {
             let idx = idx.max(0) as usize;
             // Update in-memory config and save to disk
@@ -317,7 +317,7 @@ fn wire_interactions(w: &clawdpanel_ui::BarWindow, ui: &Rc<UiState>, reveal_slot
                         xwin.remove_app_bar();
                         xwin.dock_to_monitor(mon, BAR_HEIGHT, pinned, monitors);
                         ctrl.configure(mon.clone(), BAR_HEIGHT, pinned, click_through);
-                        if let Some(ui_window) = weak.upgrade() {
+                        if let Some(ui_window) = _weak.upgrade() {
                             ui_window.global::<ClaudeBar>()
                                 .set_monitor_label(format!("{}", idx + 1).into());
                             let width = shell::width_px(mon);
@@ -433,6 +433,7 @@ pub(crate) fn x11_window_id(win: &slint::winit_030::winit::window::Window) -> Op
 /// reveal machine. Launch defaults mirror Go's `NewApp` force-overrides (docked,
 /// pinned, opaque). Returns the live handles (X connection, reveal controller,
 /// poll loop) to keep them alive for the session, or `None` if X init fails.
+#[cfg(target_os = "linux")]
 struct SlintX11Window {
     x11: shell::X11Window,
     weak_w: slint::Weak<clawdpanel_ui::BarWindow>,
