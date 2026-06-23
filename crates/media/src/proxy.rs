@@ -258,7 +258,7 @@ async fn fetch_segment(
     }
     resp.bytes().await.map_err(|e| {
         log::warn!("[Proxy] fetch_segment {start}-{end} failed to read body: {e}");
-        ()
+        
     })
 }
 

@@ -115,7 +115,7 @@ impl Inner {
             // the seek timeline moves without re-triggering the status/marquee.
             if ev.state == st.current_state && ev.err.is_empty() {
                 if st.current_state == State::Playing
-                    && st.last_progress.map_or(true, |t| t.elapsed() >= PROGRESS_INTERVAL)
+                    && st.last_progress.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL)
                 {
                     st.last_progress = Some(Instant::now());
                     let (pos, dur) = if st.cur_is_live {
@@ -393,12 +393,17 @@ mod tests {
     use crate::event::ResolvedTrack;
     use std::sync::mpsc as stdmpsc;
 
+    /// Test-supplied `play` body: receives the url + the event sender to emit on.
+    type PlayFn = Box<dyn FnMut(&str, &mpsc::Sender<Event>) -> Result<()> + Send>;
+    /// Test-supplied resolver body: maps (video_id, force_refresh) → a track.
+    type UrlFn = Box<dyn Fn(&str, bool) -> Result<ResolvedTrack> + Send + Sync>;
+
     /// A mock native player whose `play` runs a test-supplied closure, which can
     /// emit player events back through the chan-A sender (the Go mock's
     /// `go c.handlePlayerEvent(...)`).
     struct MockPlayer {
         tx: mpsc::Sender<Event>,
-        play_fn: Mutex<Box<dyn FnMut(&str, &mpsc::Sender<Event>) -> Result<()> + Send>>,
+        play_fn: Mutex<PlayFn>,
     }
     impl Player for MockPlayer {
         fn play(&self, url: &str) -> Result<()> {
@@ -424,7 +429,7 @@ mod tests {
     /// Records resolve calls + their force flag; URL chosen by a closure.
     struct MockResolver {
         calls: Mutex<Vec<(String, bool)>>,
-        url_fn: Box<dyn Fn(&str, bool) -> Result<ResolvedTrack> + Send + Sync>,
+        url_fn: UrlFn,
     }
     #[async_trait]
     impl StreamResolver for MockResolver {
@@ -541,8 +546,8 @@ mod tests {
         assert_eq!(play_count.load(std::sync::atomic::Ordering::SeqCst), 2);
         let calls = resolver_calls.calls.lock();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].1, false);
-        assert_eq!(calls[1].1, true);
+        assert!(!calls[0].1);
+        assert!(calls[1].1);
     }
 
     // Ported from Go controller_test.go::TestController_RetryFail.
