@@ -82,7 +82,7 @@ FunctionEnd
 Section
     !insertmacro wails.setShellContext
 
-    !insertmacro wails.webview2runtime
+    ; !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
 
