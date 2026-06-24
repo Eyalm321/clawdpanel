@@ -186,8 +186,13 @@ impl Video {
         {
             let mut fallback_success = false;
 
-            // Try android client
-            if let Some(client_cfg) = INNERTUBE_CLIENT.get("android") {
+            // Try TV (TVHTML5) client FIRST: it is poToken-EXEMPT, so its stream
+            // URLs don't 403 after the grace period the way the android/web client's
+            // do (poToken required since 2024). Per RustyPipe's notes the TV player
+            // "does not use the token at all and is currently the best workaround";
+            // the only downside (no title/description metadata) is irrelevant for
+            // radio. android is the fallback below if TV yields no streamingData.
+            if let Some(client_cfg) = INNERTUBE_CLIENT.get("tv") {
                 if let Ok(config_str) = self.get_player_ytconfig(&response, client_cfg.clone()).await {
                     let player_response_new = serde_json::from_str::<PlayerResponse>(&config_str).unwrap_or_default();
                     if let Some(ref sd) = player_response_new.streaming_data {
@@ -211,9 +216,9 @@ impl Video {
                 }
             }
 
-            // Try tv client if android failed
+            // Fallback: android client if TV yielded no usable streamingData.
             if !fallback_success {
-                if let Some(client_cfg) = INNERTUBE_CLIENT.get("tv") {
+                if let Some(client_cfg) = INNERTUBE_CLIENT.get("android") {
                     if let Ok(config_str) = self.get_player_ytconfig(&response, client_cfg.clone()).await {
                         let player_response_new = serde_json::from_str::<PlayerResponse>(&config_str).unwrap_or_default();
                         if let Some(ref sd) = player_response_new.streaming_data {

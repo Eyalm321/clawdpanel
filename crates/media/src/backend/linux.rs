@@ -223,6 +223,7 @@ fn setup_user_agent_injection(element: &gst::Element) {
 impl Player for LinuxPlayer {
     fn play(&self, url: &str) -> Result<()> {
         let s = &self.shared;
+        println!("[play] (re)start pipeline → {url}");
         // Stop previous playback.
         let _ = s.playbin.set_state(gst::State::Ready);
         s.playbin.set_property("uri", url);
@@ -456,6 +457,8 @@ fn handle_message(shared: &Arc<Shared>, msg: &gst::Message) {
     use gst::MessageView;
     match msg.view() {
         MessageView::Error(err) => {
+            println!("[gst-bus] ERROR: {} | src={:?} | debug={:?}",
+                err.error(), msg.src().map(|s| s.name()), err.debug());
             shared.send(Event::error("", err.error().to_string()));
         }
         MessageView::Eos(_) => {
@@ -673,6 +676,269 @@ mod tests {
         }
         let _ = playbin.set_state(gst::State::Null);
         println!("[repro] DONE: {} stalls in {}s, final pos={:.1}s", stalls, secs, last_pos_ns as f64/1e9);
+    }
+
+    // Long-run harness for the "jumps to live every ~10min, diverges in between"
+    // report. Unlike repro_live_buffering (which breaks at the first EOS), this
+    // RE-RESOLVES on EOS exactly like the station does, so a 30-min run catches
+    // the recurring jump. It measures two things the short harness can't:
+    //   * window cadence  = wall seconds between EOS events (the jump period)
+    //   * playback lag    = wall_in_window - sink_position; if this grows, the
+    //                       sink is playing < 1x (accumulating latency = the
+    //                       audible "diverge"); if it stays flat, the only jump
+    //                       is the pure EOS/window seam.
+    //   CLAWD_REPRO_SECS=1800 CLAWD_REPRO_VID=4xDzrJKXOOY \
+    //     cargo test -p clawdpanel-media repro_live_jump -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn repro_live_jump() {
+        use crate::resolver::StreamResolver;
+        use crate::ytdl::YtdlResolver;
+
+        let secs: u64 = std::env::var("CLAWD_REPRO_SECS").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(1800);
+        let vid = std::env::var("CLAWD_REPRO_VID").unwrap_or_else(|_| "4xDzrJKXOOY".to_string());
+
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let resolver = YtdlResolver::new(rt.handle().clone()).unwrap();
+        let resolve = |force: bool| -> Option<String> {
+            rt.block_on(async { resolver.resolve(&vid, force).await }).ok().map(|t| t.url)
+        };
+
+        gst::init().unwrap();
+        let playbin = gst::ElementFactory::make("playbin").name("repro-jump").build().unwrap();
+        playbin.set_property_from_str("flags", "audio+soft-volume");
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        sink.set_property("sync", true); // honour timestamps → render at 1x real-time
+        playbin.set_property("audio-sink", &sink);
+
+        let depth = std::env::var("CLAWD_PREFETCH_DEPTH").unwrap_or_else(|_| "40(default)".into());
+        let ttl = std::env::var("CLAWD_SEG_TTL_S").unwrap_or_else(|_| "180(default)".into());
+        println!("[jump] vid={vid} run={secs}s  prefetch_depth={depth} seg_ttl={ttl}");
+
+        let start_window = |pb: &gst::Element, url: &str| {
+            let _ = pb.set_state(gst::State::Null);
+            pb.set_property("uri", url);
+            let ret = pb.set_state(gst::State::Paused);
+            // static /dash prerolls (not NoPreroll); promoted to PLAYING on AsyncDone.
+            if matches!(ret, Ok(gst::StateChangeSuccess::NoPreroll)) {
+                let _ = pb.set_state(gst::State::Playing);
+            }
+        };
+
+        let url = match resolve(true) {
+            Some(u) => u,
+            None => { println!("[jump] initial resolve FAILED — bad/expired live id?"); return; }
+        };
+        println!("[jump] window #1 url = {url}");
+        start_window(&playbin, &url);
+
+        let bus = playbin.bus().unwrap();
+        let t0 = Instant::now();
+        let mut window = 1u32;
+        let mut window_start = Instant::now();
+        let mut last_pos_ns: i64 = -1;
+        let mut last_advance = Instant::now();
+        let mut stalls = 0u32;
+        let mut in_stall = false;
+        let mut last_tick = Instant::now();
+        let filter = [gst::MessageType::Error, gst::MessageType::Eos, gst::MessageType::AsyncDone];
+
+        while t0.elapsed() < Duration::from_secs(secs) {
+            if let Some(msg) = bus.timed_pop_filtered(gst::ClockTime::from_mseconds(200), &filter) {
+                match msg.view() {
+                    gst::MessageView::Error(e) => {
+                        println!("[jump] {:>6.1}s ERROR (win#{window}) {} — re-resolving",
+                            t0.elapsed().as_secs_f64(), e.error());
+                        if let Some(u) = resolve(true) { window += 1; window_start = Instant::now();
+                            last_pos_ns = -1; in_stall = false; start_window(&playbin, &u); }
+                    }
+                    gst::MessageView::AsyncDone(_) => {
+                        let _ = playbin.set_state(gst::State::Playing);
+                    }
+                    gst::MessageView::Eos(_) => {
+                        let played = window_start.elapsed().as_secs_f64();
+                        println!("[jump] {:>6.1}s ◆ EOS win#{window} — window played {:.1}s (sink pos={:.1}s) → JUMP/re-resolve",
+                            t0.elapsed().as_secs_f64(), played, last_pos_ns as f64/1e9);
+                        match resolve(true) {
+                            Some(u) => {
+                                window += 1; window_start = Instant::now();
+                                last_pos_ns = -1; last_advance = Instant::now(); in_stall = false;
+                                println!("[jump] {:>6.1}s   ↳ window #{window} url = {u}", t0.elapsed().as_secs_f64());
+                                start_window(&playbin, &u);
+                            }
+                            None => { println!("[jump] re-resolve FAILED — stopping"); break; }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(pos) = playbin.query_position::<gst::ClockTime>() {
+                let ns = pos.nseconds() as i64;
+                if ns > last_pos_ns {
+                    if in_stall {
+                        println!("[jump] {:>6.1}s ▶ resumed after {:.1}s stall",
+                            t0.elapsed().as_secs_f64(), last_advance.elapsed().as_secs_f64());
+                        in_stall = false;
+                    }
+                    last_pos_ns = ns;
+                    last_advance = Instant::now();
+                } else if !in_stall && last_advance.elapsed() > Duration::from_secs(2) && last_pos_ns > 0 {
+                    stalls += 1; in_stall = true;
+                    println!("[jump] {:>6.1}s ⏸ STALL #{stalls} (win#{window}) pos frozen at {:.1}s",
+                        t0.elapsed().as_secs_f64(), last_pos_ns as f64/1e9);
+                }
+            }
+
+            // 15s heartbeat: wall-in-window vs sink position. Lag that grows ⇒ <1x ⇒ diverge.
+            if last_tick.elapsed() >= Duration::from_secs(15) {
+                last_tick = Instant::now();
+                let in_win = window_start.elapsed().as_secs_f64();
+                let pos = last_pos_ns as f64 / 1e9;
+                println!("[jump] {:>6.1}s   win#{window} in_window={:.0}s sink_pos={:.1}s lag={:.1}s stalls={}",
+                    t0.elapsed().as_secs_f64(), in_win, pos, (in_win - pos).max(0.0), stalls);
+            }
+        }
+        let _ = playbin.set_state(gst::State::Null);
+        println!("[jump] DONE: {window} windows, {stalls} stalls in {secs}s");
+    }
+
+    /// Resolver decorator: forwards to the real YtdlResolver but counts/logs every
+    /// `resolve` call and its `force` flag. `do_retry` (the controller's
+    /// retry-once) is the ONLY caller that passes force=true, so force-count == the
+    /// number of app-layer pipeline restarts. The proxy's own internal re-resolve
+    /// (`reresolve_dash`) bypasses this seam, so it is NOT counted here.
+    struct CountingResolver {
+        inner: Arc<crate::ytdl::YtdlResolver>,
+        t0: Instant,
+        total: std::sync::atomic::AtomicU64,
+        forced: std::sync::atomic::AtomicU64,
+    }
+    #[async_trait::async_trait]
+    impl crate::resolver::StreamResolver for CountingResolver {
+        async fn resolve(&self, video_id: &str, force: bool) -> Result<crate::event::ResolvedTrack> {
+            self.total.fetch_add(1, Ordering::SeqCst);
+            if force {
+                self.forced.fetch_add(1, Ordering::SeqCst);
+            }
+            let r = self.inner.resolve(video_id, force).await;
+            println!("[ctrl] {:>6.1}s RESOLVE force={force} -> {}",
+                self.t0.elapsed().as_secs_f64(),
+                match &r { Ok(t) => format!("ok live={} {}", t.is_live, t.url), Err(e) => format!("ERR {e}") });
+            r
+        }
+    }
+
+    // Controller-path harness for "is the ~N-min jump an app-layer play() restart
+    // or the inherent proxy re-resolve skip?". Drives the REAL stack — YtdlResolver
+    // (wrapped to count force=true resolves) → Controller (retry-once) → LinuxPlayer
+    // (bus thread + stall watchdog + autoaudiosink) — exactly as the app does, and
+    // re-plays on terminal Error/Ended like the single-track station. Decision:
+    //   * forced resolves > 0 at a periodic cadence ⇒ APP-LAYER RESTART (controller
+    //     retry on a backend bus error / watchdog). Fix lives in backend/controller.
+    //   * forced resolves ≈ 0, only continuous Playing ⇒ INHERENT PROXY SKIP (the
+    //     proxy's internal manifest re-resolve hands dashdemux a fresh CDN window;
+    //     the skip never reaches the app). Fix lives in the proxy.
+    // Position resets (playhead drops toward 0) corroborate a restart.
+    //   CLAWD_REPRO_SECS=1800 CLAWD_REPRO_VID=4xDzrJKXOOY \
+    //     cargo test -p clawdpanel-media repro_controller_jump -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn repro_controller_jump() {
+        use crate::controller::Controller;
+        use crate::event::{Event, State};
+        use crate::station::TrackController;
+        use std::sync::atomic::AtomicU64;
+
+        let secs: u64 = std::env::var("CLAWD_REPRO_SECS").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(1800);
+        let vid = std::env::var("CLAWD_REPRO_VID").unwrap_or_else(|_| "4xDzrJKXOOY".to_string());
+
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let t0 = Instant::now();
+        let resolver = Arc::new(CountingResolver {
+            inner: crate::ytdl::YtdlResolver::new(rt.handle().clone()).unwrap(),
+            t0,
+            total: AtomicU64::new(0),
+            forced: AtomicU64::new(0),
+        });
+        let ctrl = Controller::new(resolver.clone(), rt.handle().clone()).unwrap();
+
+        // Stats touched only by the emit closure (serialized by the dispatcher).
+        struct Stats { last_pos: f64, max_pos: f64, resets: u32, errors: u32, ended: u32, replays: u32, playing_tx: u32, loadings: u32 }
+        let stats = Arc::new(Mutex::new(Stats { last_pos: 0.0, max_pos: 0.0, resets: 0, errors: 0, ended: 0, replays: 0, playing_tx: 0, loadings: 0 }));
+
+        let tc: Arc<dyn TrackController> = ctrl.track_controller();
+        let depth = std::env::var("CLAWD_PREFETCH_DEPTH").unwrap_or_else(|_| "40(default)".into());
+        println!("[ctrl] vid={vid} run={secs}s prefetch_depth={depth} — driving REAL Controller+LinuxPlayer");
+
+        let st_emit = stats.clone();
+        let tc_emit = tc.clone();
+        let rt_emit = rt.handle().clone();
+        let vid_emit = vid.clone();
+        let emit: crate::event::EmitFn = Arc::new(move |ev: Event| {
+            let now = t0.elapsed().as_secs_f64();
+            let mut s = st_emit.lock();
+            if ev.progress {
+                // Throttled playhead tick. A drop toward 0 = a fresh pipeline = restart.
+                if ev.position + 5.0 < s.last_pos {
+                    s.resets += 1;
+                    println!("[ctrl] {now:>6.1}s ⟲ POSITION RESET {:.1}s -> {:.1}s (restart #{})", s.last_pos, ev.position, s.resets);
+                }
+                s.last_pos = ev.position;
+                if ev.position > s.max_pos { s.max_pos = ev.position; }
+                return;
+            }
+            // A state transition (not a progress tick).
+            match ev.state {
+                State::Loading => { s.loadings += 1; }
+                State::Playing => { s.playing_tx += 1; }
+                State::Error => {
+                    s.errors += 1;
+                    println!("[ctrl] {now:>6.1}s ✖ ERROR (outward) #{}: {}", s.errors, ev.err);
+                }
+                State::Ended => { s.ended += 1; }
+                _ => {}
+            }
+            println!("[ctrl] {now:>6.1}s STATE {} vid={} pos={:.1} dur={:.1} err={}",
+                ev.state.as_str(), ev.video_id, ev.position, ev.duration, ev.err);
+            // Single-track station behavior: a terminal Error or natural Ended re-plays.
+            if matches!(ev.state, State::Error | State::Ended) {
+                s.replays += 1;
+                println!("[ctrl] {now:>6.1}s ↻ re-play (station) #{}", s.replays);
+                drop(s);
+                let tc2 = tc_emit.clone();
+                let v = vid_emit.clone();
+                rt_emit.spawn(async move { let _ = tc2.play_video(&v).await; });
+            }
+        });
+        ctrl.set_emit(emit);
+
+        rt.block_on(tc.play_video(&vid)).unwrap();
+
+        let mut last_tick = Instant::now();
+        while t0.elapsed() < Duration::from_secs(secs) {
+            std::thread::sleep(Duration::from_millis(250));
+            if last_tick.elapsed() >= Duration::from_secs(30) {
+                last_tick = Instant::now();
+                let s = stats.lock();
+                println!("[ctrl] {:>6.1}s ── pos={:.1}s max={:.1}s | resets={} errors={} ended={} replays={} | resolves total={} forced={}",
+                    t0.elapsed().as_secs_f64(), s.last_pos, s.max_pos, s.resets, s.errors, s.ended, s.replays,
+                    resolver.total.load(Ordering::SeqCst), resolver.forced.load(Ordering::SeqCst));
+            }
+        }
+
+        let _ = ctrl.close();
+        let s = stats.lock();
+        let forced = resolver.forced.load(Ordering::SeqCst);
+        println!("[ctrl] DONE in {secs}s: forced_resolves(app-layer restarts)={forced} position_resets={} outward_errors={} ended={} replays={} | total_resolves={}",
+            s.resets, s.errors, s.ended, s.replays, resolver.total.load(Ordering::SeqCst));
+        println!("[ctrl] VERDICT: {}", if forced == 0 && s.resets == 0 {
+            "no app-layer restart — jump is the INHERENT PROXY re-resolve skip (fix in proxy)"
+        } else {
+            "app-layer RESTART observed (controller retry / position reset) — fix in backend/controller"
+        });
     }
 
     // The stall watchdog's gating (the part that turns a wedged broken-HLS

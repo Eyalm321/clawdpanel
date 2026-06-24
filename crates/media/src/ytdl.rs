@@ -57,6 +57,10 @@ const UPSTREAM_CONCURRENCY: usize = 8;
 /// RAM. ~2s/segment, so 40 ≈ 80s — comfortably more than one adaptivedemux buffer
 /// cycle (~50s), the invariant that turns refill bursts into RAM cache hits.
 const READAHEAD_DEPTH: i64 = 40;
+/// How many segments past the observed served edge (`max_served_sq`) prefetch may
+/// probe — enough to discover the edge advancing, without a 403 storm on
+/// not-yet-published segments. Overridable via `CLAWD_PREFETCH_PROBE`.
+const PREFETCH_PROBE_MARGIN: i64 = 4;
 /// Segment-cache TTL. Must exceed the readahead horizon plus one buffer cycle so a
 /// deep-prefetched segment survives until the player reaches it.
 const SEGMENT_CACHE_TTL_S: u64 = 180;
@@ -118,6 +122,10 @@ pub struct YtdlResolver {
     live_dash_body: Mutex<HashMap<String, ManifestBody>>,
     bound_clients: Mutex<HashMap<std::net::IpAddr, reqwest::Client>>,
     segment_cache: Mutex<HashMap<String, SegmentEntry>>,
+    /// Highest segment `sq` per video the CDN has actually served (HTTP 200/206),
+    /// learned from real fetches. Prefetch probes only just past this so it doesn't
+    /// storm googlevideo with 403s on not-yet-published future segments.
+    max_served_sq: Mutex<HashMap<String, i64>>,
 }
 
 impl YtdlResolver {
@@ -168,6 +176,7 @@ impl YtdlResolver {
             live_dash_body: Mutex::new(HashMap::new()),
             bound_clients: Mutex::new(HashMap::new()),
             segment_cache: Mutex::new(HashMap::new()),
+            max_served_sq: Mutex::new(HashMap::new()),
         });
 
         let app = Router::new()
@@ -918,6 +927,21 @@ impl YtdlResolver {
         }
     }
 
+    /// Records that the CDN served `url` (HTTP 200/206), advancing the per-video
+    /// observed served edge that bounds the prefetch probe.
+    fn note_served_sq(&self, url: &str) {
+        let sq = RE_SQ.captures(url)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<i64>().ok());
+        if let (Some(vid), Some(sq)) = (parse_video_id(url), sq) {
+            let mut m = self.max_served_sq.lock();
+            let e = m.entry(vid).or_insert(sq);
+            if sq > *e {
+                *e = sq;
+            }
+        }
+    }
+
     fn trigger_prefetch(self: &Arc<Self>, url: &str) {
         let Some(caps) = RE_SQ.captures(url) else {
             return;
@@ -928,7 +952,16 @@ impl YtdlResolver {
         let Ok(sq_num) = sq_match.as_str().parse::<i64>() else {
             return;
         };
-        
+
+        // Probe ceiling: don't prefetch more than a few segments past the observed
+        // served edge — those are not published yet, so they only 403-storm
+        // googlevideo (which then throttles the IP, 403ing the *real* segments too).
+        let probe_margin: i64 = std::env::var("CLAWD_PREFETCH_PROBE").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(PREFETCH_PROBE_MARGIN);
+        let probe_ceil = parse_video_id(url)
+            .and_then(|vid| self.max_served_sq.lock().get(&vid).copied())
+            .map(|served| served + probe_margin);
+
         // Maintain a deep readahead window so the proxy keeps the next ~80s of
         // segments warm in RAM. adaptivedemux2 buffers in bursts: it fills its
         // buffer, stops downloading, drains it to 0%, then refills. A shallow +2
@@ -943,6 +976,11 @@ impl YtdlResolver {
             .and_then(|s| s.parse().ok()).unwrap_or(READAHEAD_DEPTH);
         for offset in 1..=depth {
             let next_sq = sq_num + offset;
+            if let Some(ceil) = probe_ceil {
+                if next_sq > ceil {
+                    break;
+                }
+            }
             let next_url = url.replace(&format!("/sq/{}/", sq_num), &format!("/sq/{}/", next_sq));
 
             if self.segment_cache.lock().contains_key(&next_url) {
@@ -973,6 +1011,7 @@ impl YtdlResolver {
             match state_opt {
                 Some(SegmentState::Complete(bytes)) => {
                     println!("[ProxySegment] Cache hit for complete segment: {}", url);
+                    self.note_served_sq(url);
                     return Ok(bytes);
                 }
                 Some(SegmentState::InFlight(mut rx)) => {
@@ -1065,48 +1104,79 @@ impl YtdlResolver {
                         UPSTREAM_SEM.acquire().await.unwrap()
                     };
                     let client = self.client_for_url(url);
-                    let req = client.get(url)
-                        .header(header::REFERER, "https://www.youtube.com/")
-                        .header(header::ORIGIN, "https://www.youtube.com");
-                    
-                    let upstream = match req.send().await {
-                        Ok(u) => u,
-                        Err(e) => {
-                            println!("[ProxySegment] upstream send error: {}", e);
-                            let _ = tx.send(SegmentStatus::Failed);
-                            self.segment_cache.lock().remove(url);
-                            return Err(e.to_string());
-                        }
-                    };
-
-                    let status = upstream.status();
-                    println!("[ProxySegment] upstream status response: {}", status);
-                    if status == StatusCode::FORBIDDEN {
-                        if !is_prefetch {
-                            if let Some(video_id) = parse_video_id(url) {
-                                println!("[ProxySegment] Got 403 Forbidden for video_id: {}, forcing manifest re-resolve", video_id);
-                                self.live_dash.lock().remove(&video_id);
-                                self.live_dash_body.lock().remove(&video_id);
+                    // On-demand (player) 403: the live-edge segment is announced in the
+                    // manifest but the CDN hasn't started serving it yet. Returning the
+                    // 403 to dashdemux makes souphttpsrc treat it as FATAL → pipeline
+                    // restart; the old fix (clear manifest + re-resolve) handed dashdemux
+                    // a forward-shifted window = the "jump to live". Instead ABSORB it in
+                    // the proxy: retry the SAME url (same host) with backoff until the
+                    // segment publishes (~one segment duration), capped under souphttpsrc's
+                    // ~15s read timeout, touching nothing. The deep readahead keeps the
+                    // buffer warm so the brief wait is usually hidden. Only a 403 that
+                    // persists past the budget falls back to the (rare) manifest re-resolve
+                    // — still better than a hard pipeline restart. Prefetch never blocks.
+                    let edge_retries: u32 = std::env::var("CLAWD_EDGE_403_RETRIES").ok()
+                        .and_then(|s| s.parse().ok()).unwrap_or(18);
+                    let edge_backoff_ms: u64 = std::env::var("CLAWD_EDGE_403_BACKOFF_MS").ok()
+                        .and_then(|s| s.parse().ok()).unwrap_or(700);
+                    let mut attempt: u32 = 0;
+                    let body_bytes = loop {
+                        let upstream = match client.get(url)
+                            .header(header::REFERER, "https://www.youtube.com/")
+                            .header(header::ORIGIN, "https://www.youtube.com")
+                            .send().await
+                        {
+                            Ok(u) => u,
+                            Err(e) => {
+                                println!("[ProxySegment] upstream send error: {}", e);
+                                let _ = tx.send(SegmentStatus::Failed);
+                                self.segment_cache.lock().remove(url);
+                                return Err(e.to_string());
                             }
-                        } else {
-                            println!("[ProxySegment] Prefetch got 403 Forbidden for: {} (not clearing manifest cache)", url);
-                        }
-                    }
-                    if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
-                        let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
-                        println!("[ProxySegment] upstream error body: {}", body_text);
-                        let _ = tx.send(SegmentStatus::Failed);
-                        self.segment_cache.lock().remove(url);
-                        return Err(format!("upstream returned error status: {}", status));
-                    }
+                        };
 
-                    let body_bytes = match upstream.bytes().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            println!("[ProxySegment] upstream bytes read error: {}", e);
+                        let status = upstream.status();
+                        println!("[ProxySegment] upstream status response: {}", status);
+
+                        // Transient live-edge 403 on a player request → wait for the
+                        // segment to publish and retry; do NOT touch the manifest.
+                        if status == StatusCode::FORBIDDEN && !is_prefetch && attempt < edge_retries {
+                            attempt += 1;
+                            println!("[ProxySegment] live-edge 403 (not-yet-served) for {}, retry {}/{} in {}ms (proxy-absorbed, NOT re-resolving)",
+                                url, attempt, edge_retries, edge_backoff_ms);
+                            tokio::time::sleep(Duration::from_millis(edge_backoff_ms)).await;
+                            continue;
+                        }
+
+                        if status == StatusCode::FORBIDDEN {
+                            if !is_prefetch {
+                                // Past the retry budget → persistent; last-resort
+                                // re-resolve (rare jump, still beats a fatal restart).
+                                if let Some(video_id) = parse_video_id(url) {
+                                    println!("[ProxySegment] persistent 403 for video_id: {} after {} retries, re-resolving manifest", video_id, attempt);
+                                    self.live_dash.lock().remove(&video_id);
+                                    self.live_dash_body.lock().remove(&video_id);
+                                }
+                            } else {
+                                println!("[ProxySegment] Prefetch got 403 Forbidden for: {} (not clearing manifest cache)", url);
+                            }
+                        }
+                        if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+                            let body_text = upstream.text().await.unwrap_or_else(|_| "failed to read body".to_string());
+                            println!("[ProxySegment] upstream error body (after {attempt} retries): {}", body_text);
                             let _ = tx.send(SegmentStatus::Failed);
                             self.segment_cache.lock().remove(url);
-                            return Err(e.to_string());
+                            return Err(format!("upstream returned error status: {}", status));
+                        }
+
+                        match upstream.bytes().await {
+                            Ok(b) => break b,
+                            Err(e) => {
+                                println!("[ProxySegment] upstream bytes read error: {}", e);
+                                let _ = tx.send(SegmentStatus::Failed);
+                                self.segment_cache.lock().remove(url);
+                                return Err(e.to_string());
+                            }
                         }
                     };
 
@@ -1124,6 +1194,7 @@ impl YtdlResolver {
 
                     // Notify all listeners
                     let _ = tx.send(SegmentStatus::Done(body_bytes.clone()));
+                    self.note_served_sq(url);
                     return Ok(body_bytes);
                 }
             }

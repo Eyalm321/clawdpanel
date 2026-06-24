@@ -57,15 +57,36 @@ fn parse_window_override(raw: Option<&str>) -> Option<i64> {
     raw?.parse::<i64>().ok().filter(|&n| n > 0)
 }
 
+/// Freshest segments held back from the live edge. The player edge-tracks and
+/// requests near the newest listed segment; if that segment isn't published on the
+/// CDN yet it 403s → re-resolve → jump. Holding the listed edge a bit behind the
+/// announced edge keeps requests on already-published segments. ~15 segs ≈ 75s of
+/// latency-from-live, irrelevant for radio. Overridable via `CLAWD_LIVE_EDGE_TRIM`.
+const LIVE_EDGE_TRIM_SEGS: usize = 15;
+
+fn live_edge_trim() -> usize {
+    std::env::var("CLAWD_LIVE_EDGE_TRIM")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(LIVE_EDGE_TRIM_SEGS)
+}
+
 /// Rewrites YouTube's dynamic live MPD into a static one covering the freshest
 /// part of the DVR window. (Go `staticizeLiveMPD`.)
 pub fn staticize_live_mpd(body: &str) -> Result<String> {
-    staticize_live_mpd_window(body, live_window_ms())
+    staticize_live_mpd_windowed(body, live_window_ms(), live_edge_trim())
 }
 
 /// [`staticize_live_mpd`] with an explicit window bound (the tests exercise the
-/// trim with a small window). (Go `staticizeLiveMPDWindow`.)
+/// trim with a small window). Keeps the historical 5-segment edge trim so the
+/// ported fixtures stay byte-exact. (Go `staticizeLiveMPDWindow`.)
 pub fn staticize_live_mpd_window(body: &str, window_ms: i64) -> Result<String> {
+    staticize_live_mpd_windowed(body, window_ms, 5)
+}
+
+/// Inner staticizer: `drop_trailing` = freshest segments held back from the live
+/// edge (see [`LIVE_EDGE_TRIM_SEGS`]).
+fn staticize_live_mpd_windowed(body: &str, window_ms: i64, drop_trailing: usize) -> Result<String> {
     if !body.contains(r#"type="dynamic""#) {
         return Err(Error::new("MPD is not dynamic"));
     }
@@ -87,9 +108,8 @@ pub fn staticize_live_mpd_window(body: &str, window_ms: i64) -> Result<String> {
         return Err(Error::new("segment timeline uses r= repeat compaction"));
     }
 
-    // Drop the last 5 segments from the live edge to avoid 403 Forbidden errors
-    // on segments that are listed in the manifest but not yet ready on the CDN.
-    let drop_trailing = 5;
+    // Hold back the freshest `drop_trailing` segments from the live edge so the
+    // player doesn't request a listed-but-not-yet-published segment (→ 403).
     out = RE_SEG_LIST_BLOCK
         .replace_all(&out, |caps: &Captures| {
             let mut block = caps[0].to_string();
@@ -250,10 +270,11 @@ mod tests {
         }
         assert!(!out.contains(r#"mimeType="video/"#), "video AdaptationSet survived");
 
-        // 30min window ≫ the fixture's 12×5s: nothing trimmed, offsets unchanged.
+        // 30min window ≫ the fixture's 12×5s, and the default 15-seg edge trim
+        // exceeds the 12 available → nothing trimmed at all, offsets unchanged.
         assert!(out.contains(&format!(r#"presentationTimeOffset="{FIXTURE_PTO}""#)));
         assert!(out.contains(&format!(r#"startNumber="{FIXTURE_START}""#)));
-        assert!(out.contains(r#"mediaPresentationDuration="PT35.000S""#));
+        assert!(out.contains(r#"mediaPresentationDuration="PT60.000S""#));
     }
 
     #[test]
