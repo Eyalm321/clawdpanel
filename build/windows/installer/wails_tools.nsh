@@ -14,7 +14,7 @@
     !define INFO_PRODUCTNAME "Clawd Panel"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "2.2.11"
+    !define INFO_PRODUCTVERSION "2.2.12"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "2026"
