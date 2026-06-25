@@ -197,21 +197,10 @@ fn setup_user_agent_injection(element: &gst::Element) {
         println!("[UserAgentInject] Setting user-agent and extra-headers on: {}", name);
         element.set_property("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
         
-        // Authenticate the DIRECT segment fetches with the user's YouTube (Premium)
-        // cookies. This is the throttle-critical path: live DASH segments are pulled
-        // straight from googlevideo by souphttpsrc, and an authenticated session is
-        // tied to the account, not just the IP — so YouTube stops the IP bot-throttle
-        // that 403s these requests.
-        let mut header_builder = gst::Structure::builder("headers")
+        let extra_headers = gst::Structure::builder("headers")
             .field("Referer", "https://www.youtube.com/")
-            .field("Origin", "https://www.youtube.com");
-        if let Some(cookie) = crate::ytdl::youtube_cookies() {
-            println!("[UserAgentInject] attaching YouTube Cookie header ({} bytes) to {}", cookie.len(), name);
-            header_builder = header_builder.field("Cookie", cookie);
-        } else {
-            println!("[UserAgentInject] NO YouTube cookie — segment fetches UNAUTHENTICATED on {}", name);
-        }
-        let extra_headers = header_builder.build();
+            .field("Origin", "https://www.youtube.com")
+            .build();
         element.set_property("extra-headers", &extra_headers);
     }
     if let Ok(bin) = element.clone().dynamic_cast::<gst::Bin>() {

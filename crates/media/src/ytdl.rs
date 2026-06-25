@@ -74,73 +74,6 @@ static UPSTREAM_SEM: Lazy<tokio::sync::Semaphore> = Lazy::new(|| {
 static RE_BASE_URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)<BaseURL\b([^>]*)>(.*?)</BaseURL>"#).unwrap());
 static RE_SQ: Lazy<Regex> = Lazy::new(|| Regex::new(r#"/sq/(\d+)/"#).unwrap());
 
-/// The user's YouTube `Cookie` header for authenticated requests. A logged-in
-/// (esp. Premium) session is tied to the account, not just the IP. Source order:
-/// `CLAWD_YT_COOKIES` (raw `name=val; …` string), then a file at
-/// `CLAWD_YT_COOKIES_FILE` or `$HOME/.config/clawdpanel/youtube_cookies.txt`
-/// (Netscape `cookies.txt` OR a raw `Cookie:` header string). Cached once; the
-/// value is a secret and is never logged.
-pub(crate) fn youtube_cookies() -> Option<String> {
-    static COOKIES: Lazy<Option<String>> = Lazy::new(load_youtube_cookies);
-    COOKIES.clone()
-}
-
-fn load_youtube_cookies() -> Option<String> {
-    if let Ok(raw) = std::env::var("CLAWD_YT_COOKIES") {
-        let raw = raw.trim();
-        if !raw.is_empty() {
-            println!("[radio] YouTube auth: using cookies from CLAWD_YT_COOKIES");
-            return Some(raw.to_string());
-        }
-    }
-    let path = std::env::var("CLAWD_YT_COOKIES_FILE")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".config/clawdpanel/youtube_cookies.txt"))
-        })?;
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return None,
-    };
-    let pairs: Vec<String> = text
-        .lines()
-        .filter_map(|line| {
-            // Netscape cookies.txt: httponly cookies are prefixed `#HttpOnly_` —
-            // strip it (those are the important auth cookies), skip real comments.
-            let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
-            if line.trim_start().starts_with('#') || line.trim().is_empty() {
-                return None;
-            }
-            // tab-separated: domain, includeSub, path, secure, expiry, name, value.
-            // Keep youtube AND google domains: the auth cookies (SAPISID,
-            // __Secure-3PSID, …) live on .google.com in a cookies.txt export, not
-            // .youtube.com — filtering to youtube-only would drop them.
-            let f: Vec<&str> = line.split('\t').collect();
-            if f.len() >= 7 && (f[0].contains("youtube") || f[0].contains("google")) {
-                Some(format!("{}={}", f[5].trim(), f[6].trim()))
-            } else {
-                None
-            }
-        })
-        .collect();
-    if pairs.is_empty() {
-        // Not Netscape — treat the whole file as a raw `Cookie:` header string.
-        let raw = text.trim().strip_prefix("Cookie:").unwrap_or(text.trim()).trim();
-        if raw.is_empty() {
-            None
-        } else {
-            println!("[radio] YouTube auth: loaded raw cookie string ({} bytes) from {}", raw.len(), path.display());
-            Some(raw.to_string())
-        }
-    } else {
-        println!("[radio] YouTube auth: loaded {} cookies from {}", pairs.len(), path.display());
-        Some(pairs.join("; "))
-    }
-}
-
 #[derive(Clone, Debug)]
 enum SegmentStatus {
     Pending,
@@ -225,33 +158,20 @@ impl YtdlResolver {
         // googlevideo IP-locks the deciphered URL AND rejects unexpected
         // User-Agents with a 403 — fetch with a desktop-browser UA so the
         // byte-cache + passthrough are accepted (the proxy's reason to exist).
-        // Authenticated YouTube session: with the user's (Premium) cookies, requests
-        // are tied to the account, not just the IP. Applied to every reqwest client as
-        // a default `Cookie` header (RequestOptions.cookies is ignored when a prebuilt
-        // client is passed, so it must live on the client itself).
-        let mut default_headers = reqwest::header::HeaderMap::new();
-        if let Some(cookie) = youtube_cookies() {
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(&cookie) {
-                default_headers.insert(reqwest::header::COOKIE, v);
-            }
-        }
         let http = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-            .default_headers(default_headers.clone())
             .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let http_v4 = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-            .default_headers(default_headers.clone())
             .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let http_v6 = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-            .default_headers(default_headers.clone())
             .local_address(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -323,7 +243,6 @@ impl YtdlResolver {
         let options = VideoOptions {
             request_options: RequestOptions {
                 client: Some(self.http.clone()),
-                cookies: youtube_cookies(),
                 ..Default::default()
             },
             ..Default::default()
@@ -527,7 +446,6 @@ impl YtdlResolver {
         let options = VideoOptions {
             request_options: RequestOptions {
                 client: Some(self.http.clone()),
-                cookies: youtube_cookies(),
                 ..Default::default()
             },
             ..Default::default()
