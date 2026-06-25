@@ -74,6 +74,73 @@ static UPSTREAM_SEM: Lazy<tokio::sync::Semaphore> = Lazy::new(|| {
 static RE_BASE_URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?s)<BaseURL\b([^>]*)>(.*?)</BaseURL>"#).unwrap());
 static RE_SQ: Lazy<Regex> = Lazy::new(|| Regex::new(r#"/sq/(\d+)/"#).unwrap());
 
+/// The user's YouTube `Cookie` header for authenticated requests. A logged-in
+/// (esp. Premium) session is tied to the account, not just the IP. Source order:
+/// `CLAWD_YT_COOKIES` (raw `name=val; …` string), then a file at
+/// `CLAWD_YT_COOKIES_FILE` or `$HOME/.config/clawdpanel/youtube_cookies.txt`
+/// (Netscape `cookies.txt` OR a raw `Cookie:` header string). Cached once; the
+/// value is a secret and is never logged.
+pub(crate) fn youtube_cookies() -> Option<String> {
+    static COOKIES: Lazy<Option<String>> = Lazy::new(load_youtube_cookies);
+    COOKIES.clone()
+}
+
+fn load_youtube_cookies() -> Option<String> {
+    if let Ok(raw) = std::env::var("CLAWD_YT_COOKIES") {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            println!("[radio] YouTube auth: using cookies from CLAWD_YT_COOKIES");
+            return Some(raw.to_string());
+        }
+    }
+    let path = std::env::var("CLAWD_YT_COOKIES_FILE")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".config/clawdpanel/youtube_cookies.txt"))
+        })?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    let pairs: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            // Netscape cookies.txt: httponly cookies are prefixed `#HttpOnly_` —
+            // strip it (those are the important auth cookies), skip real comments.
+            let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+            if line.trim_start().starts_with('#') || line.trim().is_empty() {
+                return None;
+            }
+            // tab-separated: domain, includeSub, path, secure, expiry, name, value.
+            // Keep youtube AND google domains: the auth cookies (SAPISID,
+            // __Secure-3PSID, …) live on .google.com in a cookies.txt export, not
+            // .youtube.com — filtering to youtube-only would drop them.
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() >= 7 && (f[0].contains("youtube") || f[0].contains("google")) {
+                Some(format!("{}={}", f[5].trim(), f[6].trim()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if pairs.is_empty() {
+        // Not Netscape — treat the whole file as a raw `Cookie:` header string.
+        let raw = text.trim().strip_prefix("Cookie:").unwrap_or(text.trim()).trim();
+        if raw.is_empty() {
+            None
+        } else {
+            println!("[radio] YouTube auth: loaded raw cookie string ({} bytes) from {}", raw.len(), path.display());
+            Some(raw.to_string())
+        }
+    } else {
+        println!("[radio] YouTube auth: loaded {} cookies from {}", pairs.len(), path.display());
+        Some(pairs.join("; "))
+    }
+}
+
 #[derive(Clone, Debug)]
 enum SegmentStatus {
     Pending,
@@ -126,6 +193,19 @@ pub struct YtdlResolver {
     /// learned from real fetches. Prefetch probes only just past this so it doesn't
     /// storm googlevideo with 403s on not-yet-published future segments.
     max_served_sq: Mutex<HashMap<String, i64>>,
+    /// The CURRENT live-session segment BaseURL per video (the googlevideo prefix
+    /// before `sq/N/...`), refreshed on every manifest fetch/re-resolve. YouTube
+    /// rotates the live session (`ei`) every few minutes and 403s the old session's
+    /// segment URLs even though they haven't expired. dashdemux2 keeps requesting
+    /// segments off its loaded (now-stale) window; we transparently re-point each
+    /// fetch at this current BaseURL (keeping the content-addressed `sq/N/lmt/M`
+    /// suffix), so a session rotation never reaches the player as a 403/jump.
+    current_baseurl: Mutex<HashMap<String, String>>,
+    /// Videos with a running background session-refresher (spawn-once guard).
+    refresher_running: Mutex<std::collections::HashSet<String>>,
+    /// Last time a segment was served per video — lets the refresher self-stop when
+    /// playback stops (don't keep re-resolving a stream nobody is listening to).
+    last_segment_at: Mutex<HashMap<String, Instant>>,
 }
 
 impl YtdlResolver {
@@ -145,20 +225,33 @@ impl YtdlResolver {
         // googlevideo IP-locks the deciphered URL AND rejects unexpected
         // User-Agents with a 403 — fetch with a desktop-browser UA so the
         // byte-cache + passthrough are accepted (the proxy's reason to exist).
+        // Authenticated YouTube session: with the user's (Premium) cookies, requests
+        // are tied to the account, not just the IP. Applied to every reqwest client as
+        // a default `Cookie` header (RequestOptions.cookies is ignored when a prebuilt
+        // client is passed, so it must live on the client itself).
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        if let Some(cookie) = youtube_cookies() {
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(&cookie) {
+                default_headers.insert(reqwest::header::COOKIE, v);
+            }
+        }
         let http = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .default_headers(default_headers.clone())
             .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let http_v4 = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .default_headers(default_headers.clone())
             .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let http_v6 = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .default_headers(default_headers.clone())
             .local_address(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -177,6 +270,9 @@ impl YtdlResolver {
             bound_clients: Mutex::new(HashMap::new()),
             segment_cache: Mutex::new(HashMap::new()),
             max_served_sq: Mutex::new(HashMap::new()),
+            current_baseurl: Mutex::new(HashMap::new()),
+            refresher_running: Mutex::new(std::collections::HashSet::new()),
+            last_segment_at: Mutex::new(HashMap::new()),
         });
 
         let app = Router::new()
@@ -227,6 +323,7 @@ impl YtdlResolver {
         let options = VideoOptions {
             request_options: RequestOptions {
                 client: Some(self.http.clone()),
+                cookies: youtube_cookies(),
                 ..Default::default()
             },
             ..Default::default()
@@ -390,6 +487,14 @@ impl YtdlResolver {
         fixed = RE_BASE_URL.replace_all(&fixed, |caps: &Captures| {
             let attrs = &caps[1];
             let url = caps[2].trim();
+            // Remember this fetch's session BaseURL as the current one, so segment
+            // fetches off a now-stale window get re-pointed here (see remap below).
+            // First (audio) BaseURL wins — video sets are already stripped.
+            self.current_baseurl
+                .lock()
+                .entry(video_id.to_string())
+                .and_modify(|b| *b = url.to_string())
+                .or_insert_with(|| url.to_string());
             let hex_url = to_hex(url.as_bytes());
             format!("<BaseURL{}>http://127.0.0.1:{}/proxy_segment/{}/</BaseURL>", attrs, self.port, hex_url)
         }).into_owned();
@@ -398,6 +503,9 @@ impl YtdlResolver {
             video_id.to_string(),
             ManifestBody { body: fixed.clone(), at: Instant::now() },
         );
+        // Keep the live session fresh underneath the player so segment fetches never
+        // hit a rotated-out session (see remap_to_current_session).
+        self.maybe_start_session_refresher(video_id);
         dash_response(fixed)
     }
 
@@ -419,6 +527,7 @@ impl YtdlResolver {
         let options = VideoOptions {
             request_options: RequestOptions {
                 client: Some(self.http.clone()),
+                cookies: youtube_cookies(),
                 ..Default::default()
             },
             ..Default::default()
@@ -929,15 +1038,78 @@ impl YtdlResolver {
 
     /// Records that the CDN served `url` (HTTP 200/206), advancing the per-video
     /// observed served edge that bounds the prefetch probe.
+    /// Re-points a segment URL at the CURRENT live session's BaseURL. dashdemux2
+    /// requests `…/sq/N/lmt/M` off its loaded window, whose BaseURL may belong to a
+    /// rotated-out session that now 403s; we keep the content-addressed
+    /// `sq/N/lmt/M` tail (identical across sessions) and swap in the freshest
+    /// BaseURL so the fetch lands on the live session. No-op until we've cached a
+    /// current BaseURL or if the URL has no `sq/` path.
+    fn remap_to_current_session(&self, url: &str) -> String {
+        let Some(idx) = url.find("sq/") else { return url.to_string() };
+        let Some(vid) = parse_video_id(url) else { return url.to_string() };
+        let Some(base) = self.current_baseurl.lock().get(&vid).cloned() else {
+            return url.to_string();
+        };
+        format!("{}/{}", base.trim_end_matches('/'), &url[idx..])
+    }
+
     fn note_served_sq(&self, url: &str) {
         let sq = RE_SQ.captures(url)
             .and_then(|c| c.get(1))
             .and_then(|m| m.as_str().parse::<i64>().ok());
         if let (Some(vid), Some(sq)) = (parse_video_id(url), sq) {
+            self.last_segment_at.lock().insert(vid.clone(), Instant::now());
             let mut m = self.max_served_sq.lock();
             let e = m.entry(vid).or_insert(sq);
             if sq > *e {
                 *e = sq;
+            }
+        }
+    }
+
+    /// Spawns (once per video) a background loop that re-resolves a fresh live
+    /// session every `CLAWD_SESSION_REFRESH_S` (default 90s, under YouTube's ~3min
+    /// session rotation) and updates `current_baseurl`, so `remap_to_current_session`
+    /// always points segment fetches at a live session and the player never sees a
+    /// rotation 403. Self-stops when no segment has been served for a while.
+    fn maybe_start_session_refresher(self: &Arc<Self>, video_id: &str) {
+        if !self.refresher_running.lock().insert(video_id.to_string()) {
+            return; // already running
+        }
+        let me = Arc::clone(self);
+        let vid = video_id.to_string();
+        self.rt.spawn(async move {
+            let interval = Duration::from_secs(
+                std::env::var("CLAWD_SESSION_REFRESH_S").ok()
+                    .and_then(|s| s.parse().ok()).unwrap_or(90),
+            );
+            loop {
+                tokio::time::sleep(interval).await;
+                // Self-stop if playback has stopped (no recent segment activity).
+                let idle = me.last_segment_at.lock().get(&vid).map(|t| t.elapsed());
+                if idle.map(|d| d > Duration::from_secs(180)).unwrap_or(true) {
+                    me.refresher_running.lock().remove(&vid);
+                    println!("[radio] session refresh: stopping for {} (idle)", vid);
+                    return;
+                }
+                me.refresh_session(&vid).await;
+            }
+        });
+    }
+
+    /// Re-resolves a fresh live session and updates `current_baseurl` so segment
+    /// fetches (via `remap_to_current_session`) land on a live, non-rotated session.
+    /// Called both periodically (background refresher) and reactively (on a player
+    /// 403, which usually means the session just rotated).
+    async fn refresh_session(self: &Arc<Self>, video_id: &str) {
+        if let Some(fresh) = self.reresolve_dash(video_id).await {
+            if let Some(body) = self.fetch_manifest(&fresh).await {
+                let text = String::from_utf8_lossy(&body);
+                if let Some(caps) = RE_BASE_URL.captures(&text) {
+                    let base = caps[2].trim().to_string();
+                    self.current_baseurl.lock().insert(video_id.to_string(), base);
+                    println!("[radio] session refresh: BaseURL updated for {}", video_id);
+                }
             }
         }
     }
@@ -995,6 +1167,12 @@ impl YtdlResolver {
     }
 
     async fn fetch_or_await_segment(self: &Arc<Self>, url: &str, is_prefetch: bool) -> std::result::Result<Bytes, String> {
+        // Re-point onto the CURRENT live session first, so the cache key and the
+        // upstream fetch both use fresh-session URLs. A rotated-out session (stale
+        // `ei`) thus never reaches the player as a 403 — the root of the periodic
+        // jump. No-op until a manifest has been served (current BaseURL cached).
+        let remapped = self.remap_to_current_session(url);
+        let url = remapped.as_str();
         // Clean up expired segments. The TTL must outlive the readahead horizon
         // (depth × ~2s ≈ 80s) plus the time until playback reaches the segment
         // (~one buffer cycle), or deep-prefetched segments get evicted before use.
@@ -1103,7 +1281,6 @@ impl YtdlResolver {
                     } else {
                         UPSTREAM_SEM.acquire().await.unwrap()
                     };
-                    let client = self.client_for_url(url);
                     // On-demand (player) 403: the live-edge segment is announced in the
                     // manifest but the CDN hasn't started serving it yet. Returning the
                     // 403 to dashdemux makes souphttpsrc treat it as FATAL → pipeline
@@ -1120,8 +1297,15 @@ impl YtdlResolver {
                     let edge_backoff_ms: u64 = std::env::var("CLAWD_EDGE_403_BACKOFF_MS").ok()
                         .and_then(|s| s.parse().ok()).unwrap_or(700);
                     let mut attempt: u32 = 0;
+                    let mut refreshed = false;
                     let body_bytes = loop {
-                        let upstream = match client.get(url)
+                        // Re-point at the LATEST live session every attempt — a reactive
+                        // refresh below (or the background refresher) may have advanced
+                        // current_baseurl. remap is idempotent, so this just swaps in the
+                        // freshest BaseURL. Recompute the IP-bound client to match.
+                        let fetch_url = self.remap_to_current_session(url);
+                        let client = self.client_for_url(&fetch_url);
+                        let upstream = match client.get(&fetch_url)
                             .header(header::REFERER, "https://www.youtube.com/")
                             .header(header::ORIGIN, "https://www.youtube.com")
                             .send().await
@@ -1137,6 +1321,21 @@ impl YtdlResolver {
 
                         let status = upstream.status();
                         println!("[ProxySegment] upstream status response: {}", status);
+
+                        // A player 403 is usually a ROTATED-OUT session (the old `ei` was
+                        // killed server-side), not a not-yet-published edge. On the first
+                        // one, refresh the live session and retry on the fresh BaseURL
+                        // BEFORE spending edge-retries — recovers in ~1 re-resolve instead
+                        // of a multi-second retry storm + jump.
+                        if status == StatusCode::FORBIDDEN && !is_prefetch {
+                            if !refreshed {
+                                refreshed = true;
+                                if let Some(vid) = parse_video_id(&fetch_url) {
+                                    self.refresh_session(&vid).await;
+                                }
+                                continue;
+                            }
+                        }
 
                         // Transient live-edge 403 on a player request → wait for the
                         // segment to publish and retry; do NOT touch the manifest.
